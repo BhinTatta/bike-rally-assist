@@ -1,0 +1,20 @@
+{
+  "name": "@rally/cli",
+  "version": "0.1.0",
+  "description": "Developer tools for the rally co-driver engine: corner tables, ride simulation, debug maps.",
+  "type": "module",
+  "bin": { "rally": "./dist/index.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"(cli has no tests; see @rally/engine)\"",
+    "rally": "node --experimental-strip-types src/index.ts"
+  },
+  "dependencies": {
+    "@rally/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.6.3"
+  }
+}

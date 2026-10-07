@@ -34,6 +34,7 @@ export interface CrashRecord {
 const crashFile = (): File => new File(Paths.document, "last-crash.json");
 const rideMarkerFile = (): File => new File(Paths.document, "ride-screen-marker.json");
 const breadcrumbFile = (): File => new File(Paths.document, "breadcrumb.json");
+const heartbeatFile = (): File => new File(Paths.document, "heartbeat.json");
 
 let phase = "startup";
 
@@ -111,6 +112,34 @@ export function clearBreadcrumb(): void {
  */
 export function lastCrashWasAudio(): boolean {
   return readBreadcrumb()?.step.startsWith("audio:") === true;
+}
+
+// -------------------------------------------------------------- heartbeat
+
+/**
+ * How long the ride survived.
+ *
+ * The breadcrumb says *where* it died; this says *when*. The difference
+ * matters: Android kills a process whose foreground service fails to post its
+ * notification within five seconds, so "survived about five seconds after the
+ * screen appeared" points somewhere very specific, and "survived two minutes"
+ * points somewhere else entirely.
+ */
+export function heartbeat(): void {
+  writeJson(heartbeatFile(), { at: Date.now() });
+}
+
+export function readHeartbeat(): number | null {
+  return readJson<{ at: number }>(heartbeatFile())?.at ?? null;
+}
+
+export function clearHeartbeat(): void {
+  try {
+    const file = heartbeatFile();
+    if (file.exists) file.delete();
+  } catch {
+    // Nothing useful to do.
+  }
 }
 
 export function clearLastCrash(): void {

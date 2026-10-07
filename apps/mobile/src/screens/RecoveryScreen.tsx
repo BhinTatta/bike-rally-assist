@@ -34,26 +34,38 @@ const STEP_NAMES: Record<string, string> = {
   "location:start-updates": "starting the location service",
   "start:navigate": "opening the ride screen",
   "ride:screen-mounted": "ride screen opened",
+  "ride:survived-2s": "running, 2 seconds in",
+  "ride:survived-6s": "running, 6 seconds in",
   "task:batch": "handling a GPS update",
+  "selftest:audio": "self-test: audio",
+  "selftest:location": "self-test: location service",
+  "selftest:done": "self-test finished",
 };
 
 export function RecoveryScreen({
   crash,
   breadcrumb,
+  survivedMs,
   routeName,
   onDismiss,
 }: {
   crash: CrashRecord | null;
   breadcrumb: Breadcrumb | null;
+  /** Time between the last breadcrumb and the last proof of life. */
+  survivedMs: number | null;
   routeName: string;
   onDismiss: () => void;
 }) {
   const share = async (): Promise<void> => {
     const file = new File(Paths.cache, "rally-crash.txt");
     file.create({ overwrite: true });
-    const trail = breadcrumb
-      ? `last step: ${breadcrumb.step} (${STEP_NAMES[breadcrumb.step] ?? "unknown step"})\nat: ${new Date(breadcrumb.at).toISOString()}\n`
-      : "last step: not recorded\n";
+    const trail =
+      (breadcrumb
+        ? `last step: ${breadcrumb.step} (${STEP_NAMES[breadcrumb.step] ?? "unknown step"})\nat: ${new Date(breadcrumb.at).toISOString()}\n`
+        : "last step: not recorded\n") +
+      (survivedMs === null
+        ? "survived: unknown\n"
+        : `survived: ${(survivedMs / 1000).toFixed(1)} s after that step\n`);
     file.write(
       crash
         ? `${new Date(crash.time).toISOString()}\nroute: ${routeName}\n${trail}phase: ${crash.phase}\n${crash.name}: ${crash.message}\n\n${crash.stack ?? ""}`
@@ -82,6 +94,9 @@ export function RecoveryScreen({
               : "not recorded"}
           </Text>
           {breadcrumb ? <Text style={styles.stepId}>{breadcrumb.step}</Text> : null}
+          {survivedMs !== null ? (
+            <Body dim>{`It kept running for ${(survivedMs / 1000).toFixed(1)} s after that.`}</Body>
+          ) : null}
           {breadcrumb?.step.startsWith("audio:") ? (
             <Body dim>
               That is the audio stack, so the next ride will start without ducking and

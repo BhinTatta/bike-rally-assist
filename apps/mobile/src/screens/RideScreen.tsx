@@ -49,6 +49,12 @@ export function RideScreen({ navigation }: Props) {
     setPhase("ride-screen");
     breadcrumb("ride:screen-mounted");
     markRideScreenOpened(rideEngine.getSnapshot().routeName || "route");
+    // The two windows where Android can still kill us for a foreground service
+    // that did not settle: narrow them down rather than guessing.
+    const marks = [
+      setTimeout(() => breadcrumb("ride:survived-2s"), 2000),
+      setTimeout(() => breadcrumb("ride:survived-6s"), 6000),
+    ];
     const healthy = setTimeout(() => {
       markRideScreenHealthy();
       // Survived long enough that the breadcrumb trail is no longer evidence
@@ -57,6 +63,7 @@ export function RideScreen({ navigation }: Props) {
     }, 8000);
     return () => {
       clearTimeout(healthy);
+      for (const mark of marks) clearTimeout(mark);
       markRideScreenHealthy();
       setPhase("app");
     };

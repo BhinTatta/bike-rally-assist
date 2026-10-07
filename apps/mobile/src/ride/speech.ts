@@ -82,6 +82,11 @@ export interface CallQueueOptions {
   /** 0-1, applied to the keep-alive stream and to clip playback. */
   volume: number;
   /**
+   * Ask for an audio session that survives backgrounding. This starts a second
+   * foreground service, so it is opt-in.
+   */
+  playInBackground: boolean;
+  /**
    * Leave the audio session and the keep-alive stream alone entirely.
    *
    * Speech still works - this only gives up ducking other apps and keeping the
@@ -134,11 +139,11 @@ export class CallQueue {
       return;
     }
     try {
-      breadcrumb("audio:set-mode");
+      breadcrumb(this.options.playInBackground ? "audio:set-mode-bg" : "audio:set-mode");
       await setAudioModeAsync({
         playsInSilentMode: true,
         interruptionMode: "duckOthers",
-        shouldPlayInBackground: true,
+        shouldPlayInBackground: this.options.playInBackground,
         shouldRouteThroughEarpiece: false,
       });
     } catch {

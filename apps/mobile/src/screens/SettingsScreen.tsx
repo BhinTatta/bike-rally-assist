@@ -32,10 +32,13 @@ import {
 import { rideEngine } from "../ride/rideEngine";
 import { openBatteryOptimisationSettings } from "../ride/permissions";
 import { clearLastCrash, readLastCrash, type CrashRecord } from "../diagnostics";
+import { runSelfTest } from "../ride/selfTest";
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [crash, setCrash] = useState<CrashRecord | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testProgress, setTestProgress] = useState<string | null>(null);
 
   useEffect(() => {
     void loadSettings().then(setSettings);
@@ -173,6 +176,15 @@ export function SettingsScreen() {
 
       <Card>
         <Toggle
+          label="Keep audio alive in the background"
+          description="Lets the keep-alive stream carry on with the screen off. This starts a second Android foreground service alongside the location one; leave it off unless you need it, and turn it off again if rides stop crashing only when it is off."
+          value={settings.backgroundAudio}
+          onChange={(backgroundAudio) => update({ backgroundAudio })}
+        />
+      </Card>
+
+      <Card>
+        <Toggle
           label="Keep the headset awake"
           description="Holds a near-silent stream open during a ride. Without it, Bluetooth headsets power down between calls and clip the first word."
           value={settings.keepHeadsetAwake}
@@ -199,6 +211,41 @@ export function SettingsScreen() {
       </Card>
 
       <SectionHeader>Android</SectionHeader>
+      <Card>
+        <Title>Self-test</Title>
+        <Subtitle>
+          Runs everything a ride start does to the phone — audio session, headset keep-alive,
+          location service — and holds it for twelve seconds, which is long enough for Android
+          to object if it is going to. No route or GPS fix needed. If the app closes during
+          this, reopen it and the report will name the exact step.
+        </Subtitle>
+        {testProgress ? <Body dim>{testProgress}</Body> : null}
+        <Button
+          label="Run self-test"
+          busy={testing}
+          style={styles.spaced}
+          onPress={() => {
+            setTesting(true);
+            void runSelfTest(setTestProgress)
+              .then((result) => {
+                Alert.alert(
+                  "Self-test finished",
+                  `${result.audioOk ? "Audio OK" : "Audio FAILED"}\n${
+                    result.locationOk ? "Location service OK" : "Location service FAILED"
+                  }\n\n${result.notes.join("\n")}`,
+                );
+              })
+              .catch((error: Error) =>
+                Alert.alert("Self-test failed", error.message),
+              )
+              .finally(() => {
+                setTesting(false);
+                setTestProgress(null);
+              });
+          }}
+        />
+      </Card>
+
       <Card>
         <Title>Battery optimisation</Title>
         <Subtitle>

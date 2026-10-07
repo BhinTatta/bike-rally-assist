@@ -35,6 +35,10 @@ const config: ExpoConfig = {
       "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
       // Needed to duck music and to hold an audio stream open for the headset.
       "MODIFY_AUDIO_SETTINGS",
+      // Android 13+ needs this for the ride's foreground-service notification
+      // to actually appear. The service runs either way, but a rider who
+      // cannot see it has no way to tell the app is still working.
+      "POST_NOTIFICATIONS",
     ],
     intentFilters: [
       {
@@ -91,6 +95,9 @@ const config: ExpoConfig = {
         // The keep-alive stream is playback only - never ask for the mic.
         microphonePermission: false,
         recordAudioAndroid: false,
+        // Declares AudioControlsService so that background playback *can* be
+        // turned on from settings. It is off by default: see the comment on
+        // `backgroundAudio` in storage/settings.ts.
         enableBackgroundPlayback: true,
       },
     ],

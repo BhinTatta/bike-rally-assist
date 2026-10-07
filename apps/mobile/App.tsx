@@ -31,6 +31,7 @@ import {
   installCrashHandler,
   markRideScreenHealthy,
   readBreadcrumb,
+  readHeartbeat,
   readLastCrash,
   rideScreenCrashedLastTime,
   setPhase,
@@ -65,6 +66,8 @@ interface Recovery {
   crash: CrashRecord | null;
   /** The last native call attempted before the process died. */
   breadcrumb: Breadcrumb | null;
+  /** How long the ride kept running after that call. */
+  survivedMs: number | null;
   routeName: string;
 }
 
@@ -83,9 +86,13 @@ export default function App() {
       if (died) {
         // Last run went into the ride screen and never came out cleanly. Shut
         // the ride down before anything else can touch it.
+        const trail = readBreadcrumb();
+        const lastAlive = readHeartbeat();
         setRecovery({
           crash: readLastCrash(),
-          breadcrumb: readBreadcrumb(),
+          breadcrumb: trail,
+          survivedMs:
+            trail && lastAlive ? Math.max(0, lastAlive - trail.at) : null,
           routeName: died.routeName,
         });
         markRideScreenHealthy();
@@ -127,6 +134,7 @@ export default function App() {
         <RecoveryScreen
           crash={recovery.crash}
           breadcrumb={recovery.breadcrumb}
+          survivedMs={recovery.survivedMs}
           routeName={recovery.routeName}
           onDismiss={() => {
             clearLastCrash();

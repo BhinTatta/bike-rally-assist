@@ -25,6 +25,16 @@ export interface Settings {
   speechRate: number;
   /** Hold a near-silent stream open so Bluetooth headsets stay awake. */
   keepHeadsetAwake: boolean;
+  /**
+   * Let the keep-alive stream keep playing with the app in the background.
+   *
+   * Off by default, and deliberately so. Turning it on makes Android start a
+   * second foreground service (media playback) alongside the location one,
+   * and that service has five seconds to post its notification or the system
+   * kills the whole process. The location service alone keeps the ride alive;
+   * this only buys the headset staying awake while the screen is off.
+   */
+  backgroundAudio: boolean;
   /** Snap imported GPX files onto OSM roads when there is a connection. */
   useOsmSnapping: boolean;
   /** Record every ride as GPX + a call log. */
@@ -41,6 +51,7 @@ export const DEFAULT_SETTINGS: Settings = {
   voiceVolume: 1,
   speechRate: 1,
   keepHeadsetAwake: true,
+  backgroundAudio: false,
   useOsmSnapping: true,
   logRides: true,
   disclaimerAccepted: false,

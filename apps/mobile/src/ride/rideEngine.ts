@@ -20,7 +20,7 @@ import { loadRoute } from "../storage/routes";
 import { loadSettings, toEngineConfig, type Settings } from "../storage/settings";
 import { CallQueue, TtsVoice } from "./speech";
 import { RideLogger } from "./rideLogger";
-import { breadcrumb, lastCrashWasAudio } from "../diagnostics";
+import { breadcrumb, heartbeat, lastCrashWasAudio } from "../diagnostics";
 
 const ACTIVE_RIDE_KEY = "rally.activeRide.v1";
 
@@ -286,6 +286,7 @@ class RideEngine {
     return {
       keepHeadsetAwake: settings.keepHeadsetAwake && !this.audioDisabled,
       skipAudioSession: this.audioDisabled,
+      playInBackground: settings.backgroundAudio && !this.audioDisabled,
       volume: settings.voiceVolume,
       /** A corner call is stale once the rider is past the corner entry. */
       isStale: (call: Call): boolean => {
@@ -306,6 +307,9 @@ class RideEngine {
   private startGpsWatchdog(): void {
     this.stopGpsWatchdog();
     this.gpsWatchdog = setInterval(() => {
+      // Doubles as the ride's proof of life: the last value written is how far
+      // the ride got before the process disappeared.
+      heartbeat();
       const codriver = this.codriver;
       if (!codriver) return;
       for (const call of codriver.tick(Date.now())) {

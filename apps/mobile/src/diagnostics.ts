@@ -33,6 +33,7 @@ export interface CrashRecord {
 
 const crashFile = (): File => new File(Paths.document, "last-crash.json");
 const rideMarkerFile = (): File => new File(Paths.document, "ride-screen-marker.json");
+const breadcrumbFile = (): File => new File(Paths.document, "breadcrumb.json");
 
 let phase = "startup";
 
@@ -72,6 +73,45 @@ export function recordCrash(error: unknown, fatal: boolean): void {
 }
 
 export const readLastCrash = (): CrashRecord | null => readJson<CrashRecord>(crashFile());
+
+// ------------------------------------------------------------- breadcrumbs
+
+export interface Breadcrumb {
+  step: string;
+  at: number;
+}
+
+/**
+ * Record the native call we are about to make.
+ *
+ * A native crash leaves no JavaScript error - the process is simply gone - so
+ * the only way to learn where it happened is to write down where we were
+ * going *before* we go there. Each of these is a synchronous file write, which
+ * is why they only wrap the handful of calls that cross into native code at
+ * ride start, and not the per-fix hot path.
+ */
+export function breadcrumb(step: string): void {
+  writeJson(breadcrumbFile(), { step, at: Date.now() } satisfies Breadcrumb);
+}
+
+export const readBreadcrumb = (): Breadcrumb | null => readJson<Breadcrumb>(breadcrumbFile());
+
+export function clearBreadcrumb(): void {
+  try {
+    const file = breadcrumbFile();
+    if (file.exists) file.delete();
+  } catch {
+    // Nothing useful to do.
+  }
+}
+
+/**
+ * Did the last run die inside the audio stack? If so the next ride starts
+ * without it: no ducking and no headset keep-alive, but a ride that runs.
+ */
+export function lastCrashWasAudio(): boolean {
+  return readBreadcrumb()?.step.startsWith("audio:") === true;
+}
 
 export function clearLastCrash(): void {
   try {

@@ -12,7 +12,7 @@ import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 
 import { rideEngine } from "./rideEngine";
-import { recordCrash, setPhase } from "../diagnostics";
+import { breadcrumb, recordCrash, setPhase } from "../diagnostics";
 
 export const LOCATION_TASK = "rally-location-updates";
 
@@ -30,6 +30,7 @@ TaskManager.defineTask<LocationTaskData>(LOCATION_TASK, async ({ data, error }) 
   if (locations.length === 0) return;
   try {
     setPhase("location-task");
+    breadcrumb("task:batch");
     await rideEngine.handleLocations(locations);
   } catch (taskError) {
     // An exception escaping a TaskManager callback takes the whole app down in
@@ -50,6 +51,7 @@ export async function startLocationUpdates(routeName: string): Promise<void> {
   const alreadyRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
   if (alreadyRunning) await Location.stopLocationUpdatesAsync(LOCATION_TASK);
 
+  breadcrumb("location:start-updates");
   await Location.startLocationUpdatesAsync(LOCATION_TASK, {
     accuracy: Location.Accuracy.BestForNavigation,
     timeInterval: 1000,

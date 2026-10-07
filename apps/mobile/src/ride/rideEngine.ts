@@ -20,6 +20,7 @@ import { loadRoute } from "../storage/routes";
 import { loadSettings, toEngineConfig, type Settings } from "../storage/settings";
 import { CallQueue, TtsVoice } from "./speech";
 import { RideLogger } from "./rideLogger";
+import { breadcrumb, lastCrashWasAudio } from "../diagnostics";
 
 const ACTIVE_RIDE_KEY = "rally.activeRide.v1";
 
@@ -71,6 +72,13 @@ class RideEngine {
   private listeners = new Set<Listener>();
   private gpsWatchdog: ReturnType<typeof setInterval> | null = null;
   private hydrating: Promise<void> | null = null;
+  /** Set when the previous run died inside the audio stack. */
+  private audioDisabled = false;
+
+  /** True when this ride is running without ducking or the keep-alive stream. */
+  get isAudioDisabled(): boolean {
+    return this.audioDisabled;
+  }
 
   // ------------------------------------------------------------------- state
 
@@ -100,17 +108,23 @@ class RideEngine {
     /** Pass an already-loaded route to avoid parsing megabytes twice. */
     preloaded?: AnalysedRoute,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
+    breadcrumb("ride:load-route");
     const route = preloaded ?? (await loadRoute(routeId));
     if (!route) return { ok: false, error: "That route could not be loaded." };
 
+    // If the audio stack is what took the app down last time, run without it.
+    this.audioDisabled = lastCrashWasAudio();
     const settings = await loadSettings();
     const rideId = `${Date.now().toString(36)}`;
     const record: ActiveRideRecord = { routeId, rideId, startedAt: Date.now() };
     await AsyncStorage.setItem(ACTIVE_RIDE_KEY, JSON.stringify(record));
 
     this.install(route, settings, record);
+    breadcrumb("ride:audio-start");
     await this.queue?.start();
+    breadcrumb("ride:watchdog");
     this.startGpsWatchdog();
+    breadcrumb("ride:ready");
     this.publish({
       active: true,
       routeId,
@@ -270,7 +284,8 @@ class RideEngine {
 
   private queueOptions(settings: Settings) {
     return {
-      keepHeadsetAwake: settings.keepHeadsetAwake,
+      keepHeadsetAwake: settings.keepHeadsetAwake && !this.audioDisabled,
+      skipAudioSession: this.audioDisabled,
       volume: settings.voiceVolume,
       /** A corner call is stale once the rider is past the corner entry. */
       isStale: (call: Call): boolean => {

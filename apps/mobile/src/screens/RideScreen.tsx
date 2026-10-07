@@ -20,6 +20,8 @@ import { colors, gradeColor, spacing } from "../ui/theme";
 import { rideEngine, type RideSnapshot } from "../ride/rideEngine";
 import { stopLocationUpdates } from "../ride/locationTask";
 import {
+  breadcrumb,
+  clearBreadcrumb,
   markRideScreenHealthy,
   markRideScreenOpened,
   setPhase,
@@ -45,8 +47,14 @@ export function RideScreen({ navigation }: Props) {
    */
   useEffect(() => {
     setPhase("ride-screen");
+    breadcrumb("ride:screen-mounted");
     markRideScreenOpened(rideEngine.getSnapshot().routeName || "route");
-    const healthy = setTimeout(markRideScreenHealthy, 8000);
+    const healthy = setTimeout(() => {
+      markRideScreenHealthy();
+      // Survived long enough that the breadcrumb trail is no longer evidence
+      // of anything; a later crash should not be blamed on ride start.
+      clearBreadcrumb();
+    }, 8000);
     return () => {
       clearTimeout(healthy);
       markRideScreenHealthy();

@@ -13,24 +13,51 @@ import { File, Paths } from "expo-file-system";
 
 import { Body, Button, Card, Title } from "../ui/components";
 import { colors, radius, spacing } from "../ui/theme";
-import type { CrashRecord } from "../diagnostics";
+import type { Breadcrumb, CrashRecord } from "../diagnostics";
+
+/** Plain-English names for the steps the breadcrumb trail records. */
+const STEP_NAMES: Record<string, string> = {
+  "start:pressed": "starting the ride",
+  "start:permissions": "checking location permissions",
+  "start:engine-begin": "loading the route",
+  "ride:load-route": "loading the route",
+  "ride:audio-start": "setting up audio",
+  "audio:set-mode": "claiming the audio session",
+  "audio:create-player": "creating the headset keep-alive player",
+  "audio:play": "starting the headset keep-alive stream",
+  "audio:playing": "audio running",
+  "audio:ready": "audio ready",
+  "audio:skipped": "audio deliberately skipped",
+  "ride:watchdog": "starting the GPS watchdog",
+  "ride:ready": "ride engine ready",
+  "start:location-service": "starting the location service",
+  "location:start-updates": "starting the location service",
+  "start:navigate": "opening the ride screen",
+  "ride:screen-mounted": "ride screen opened",
+  "task:batch": "handling a GPS update",
+};
 
 export function RecoveryScreen({
   crash,
+  breadcrumb,
   routeName,
   onDismiss,
 }: {
   crash: CrashRecord | null;
+  breadcrumb: Breadcrumb | null;
   routeName: string;
   onDismiss: () => void;
 }) {
   const share = async (): Promise<void> => {
     const file = new File(Paths.cache, "rally-crash.txt");
     file.create({ overwrite: true });
+    const trail = breadcrumb
+      ? `last step: ${breadcrumb.step} (${STEP_NAMES[breadcrumb.step] ?? "unknown step"})\nat: ${new Date(breadcrumb.at).toISOString()}\n`
+      : "last step: not recorded\n";
     file.write(
       crash
-        ? `${new Date(crash.time).toISOString()}\nphase: ${crash.phase}\n${crash.name}: ${crash.message}\n\n${crash.stack ?? ""}`
-        : `The app closed during a ride on "${routeName}" without leaving a JavaScript error, which usually means a native crash.`,
+        ? `${new Date(crash.time).toISOString()}\nroute: ${routeName}\n${trail}phase: ${crash.phase}\n${crash.name}: ${crash.message}\n\n${crash.stack ?? ""}`
+        : `The app closed during a ride on "${routeName}" without leaving a JavaScript error, which means a native crash.\n${trail}`,
     );
     if (await Sharing.isAvailableAsync()) {
       await Sharing.shareAsync(file.uri, { mimeType: "text/plain" });
@@ -45,6 +72,22 @@ export function RecoveryScreen({
           <Body>
             {`The app closed while you were riding "${routeName}". It has not reopened the ride screen, so you are not stuck in a loop.`}
           </Body>
+        </Card>
+
+        <Card>
+          <Body>Last thing it did before closing:</Body>
+          <Text style={styles.step}>
+            {breadcrumb
+              ? (STEP_NAMES[breadcrumb.step] ?? breadcrumb.step)
+              : "not recorded"}
+          </Text>
+          {breadcrumb ? <Text style={styles.stepId}>{breadcrumb.step}</Text> : null}
+          {breadcrumb?.step.startsWith("audio:") ? (
+            <Body dim>
+              That is the audio stack, so the next ride will start without ducking and
+              without the headset keep-alive. The calls themselves still work.
+            </Body>
+          ) : null}
         </Card>
 
         {crash ? (
@@ -77,6 +120,8 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   content: { flex: 1, padding: spacing.md, gap: spacing.md },
   box: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.sm },
+  step: { color: colors.accent, fontSize: 20, fontWeight: "700" },
+  stepId: { color: colors.textDim, fontFamily: "monospace", fontSize: 12 },
   mono: { color: colors.bad, fontFamily: "monospace", fontSize: 12 },
   monoDim: { color: colors.textDim, fontFamily: "monospace", fontSize: 11, marginTop: spacing.sm },
   spacer: { flex: 1 },

@@ -17,6 +17,7 @@ import { RouteMap } from "../ui/RouteMap";
 import { colors, spacing } from "../ui/theme";
 import { listRoutes, loadRoute, type RouteSummary } from "../storage/routes";
 import { checkPermissions, requestBackground, requestForeground } from "../ride/permissions";
+import { breadcrumb } from "../diagnostics";
 import { rideEngine } from "../ride/rideEngine";
 import { startLocationUpdates } from "../ride/locationTask";
 import type { RootStackParamList } from "../navigation";
@@ -31,7 +32,13 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
   // A native-stack screen stays mounted underneath the one pushed on top of
   // it. A MapLibre surface holding a long route is far too expensive to leave
   // running behind the ride screen, so it is torn down when not on screen.
+  //
+  // `mapVisible` tears it down a beat *before* the ride starts rather than
+  // during the navigation transition: unmounting a map surface while the
+  // screen animates and a foreground service starts is a well-known way to
+  // crash natively, and none of it is worth racing.
   const isFocused = useIsFocused();
+  const [mapVisible, setMapVisible] = useState(true);
 
   useEffect(() => {
     void (async () => {
@@ -45,8 +52,12 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
   const startRide = useCallback(async () => {
     setStarting(true);
     try {
+      breadcrumb("start:pressed");
+      setMapVisible(false);
+      await new Promise((resolve) => setTimeout(resolve, 350));
       // Permissions, in the order Android insists on, each with a reason.
       const state = await checkPermissions();
+      breadcrumb("start:permissions");
       if (!state.foreground && !(await requestForeground())) {
         Alert.alert(
           "Location is required",
@@ -77,17 +88,21 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
 
       // Hand over the route we already have rather than reading and parsing
       // the whole thing a second time - it is 3.7 MB for a 127 km import.
+      breadcrumb("start:engine-begin");
       const begun = await rideEngine.begin(routeId, route ?? undefined);
       if (!begun.ok) {
         Alert.alert("Could not start the ride", begun.error);
         return;
       }
+      breadcrumb("start:location-service");
       await startLocationUpdates(route?.name ?? "your route");
+      breadcrumb("start:navigate");
       navigation.navigate("Ride", { routeId });
     } catch (error) {
       Alert.alert("Could not start the ride", (error as Error).message);
     } finally {
       setStarting(false);
+      setMapVisible(true);
     }
   }, [navigation, routeId, route?.name]);
 
@@ -104,7 +119,7 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
 
   return (
     <Screen>
-      {isFocused ? (
+      {isFocused && mapVisible ? (
         <RouteMap route={route} style={styles.map} />
       ) : (
         <View style={styles.map} />

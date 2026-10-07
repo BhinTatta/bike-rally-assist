@@ -22,6 +22,8 @@ import * as Speech from "expo-speech";
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from "expo-audio";
 import type { Call } from "@rally/engine";
 
+import { breadcrumb } from "../diagnostics";
+
 /** A thing that can say a call out loud. */
 export interface Voice {
   speak(call: Call): Promise<void>;
@@ -79,6 +81,13 @@ export interface CallQueueOptions {
   keepHeadsetAwake: boolean;
   /** 0-1, applied to the keep-alive stream and to clip playback. */
   volume: number;
+  /**
+   * Leave the audio session and the keep-alive stream alone entirely.
+   *
+   * Speech still works - this only gives up ducking other apps and keeping the
+   * headset awake. Used when the audio stack is what killed the last ride.
+   */
+  skipAudioSession?: boolean;
   /** Decides whether a queued call is still worth saying. */
   isStale?: (call: Call) => boolean;
 }
@@ -120,7 +129,12 @@ export class CallQueue {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    if (this.options.skipAudioSession) {
+      breadcrumb("audio:skipped");
+      return;
+    }
     try {
+      breadcrumb("audio:set-mode");
       await setAudioModeAsync({
         playsInSilentMode: true,
         interruptionMode: "duckOthers",
@@ -132,6 +146,7 @@ export class CallQueue {
       // will still come out, it just may not duck music politely.
     }
     if (this.options.keepHeadsetAwake) this.startKeepAlive();
+    breadcrumb("audio:ready");
   }
 
   async stop(): Promise<void> {
@@ -186,12 +201,15 @@ export class CallQueue {
   private startKeepAlive(): void {
     this.stopKeepAlive();
     try {
+      breadcrumb("audio:create-player");
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const player = createAudioPlayer(require("../../assets/keepalive.wav"));
       player.loop = true;
       player.volume = keepAliveVolume(this.options.volume);
+      breadcrumb("audio:play");
       player.play();
       this.keepAlive = player;
+      breadcrumb("audio:playing");
     } catch {
       // Without it the headset may clip the first word; the ride still works.
       this.keepAlive = null;

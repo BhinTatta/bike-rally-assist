@@ -30,9 +30,11 @@ import {
   clearLastCrash,
   installCrashHandler,
   markRideScreenHealthy,
+  readBreadcrumb,
   readLastCrash,
   rideScreenCrashedLastTime,
   setPhase,
+  type Breadcrumb,
   type CrashRecord,
 } from "./src/diagnostics";
 import { colors } from "./src/ui/theme";
@@ -61,6 +63,8 @@ const theme: Theme = {
 
 interface Recovery {
   crash: CrashRecord | null;
+  /** The last native call attempted before the process died. */
+  breadcrumb: Breadcrumb | null;
   routeName: string;
 }
 
@@ -79,7 +83,11 @@ export default function App() {
       if (died) {
         // Last run went into the ride screen and never came out cleanly. Shut
         // the ride down before anything else can touch it.
-        setRecovery({ crash: readLastCrash(), routeName: died.routeName });
+        setRecovery({
+          crash: readLastCrash(),
+          breadcrumb: readBreadcrumb(),
+          routeName: died.routeName,
+        });
         markRideScreenHealthy();
         await stopLocationUpdates();
         await rideEngine.end().catch(() => undefined);
@@ -118,9 +126,12 @@ export default function App() {
         <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
         <RecoveryScreen
           crash={recovery.crash}
+          breadcrumb={recovery.breadcrumb}
           routeName={recovery.routeName}
           onDismiss={() => {
             clearLastCrash();
+            // The breadcrumb is deliberately kept: the ride engine reads it to
+            // decide whether to start the next ride without audio.
             setRecovery(null);
           }}
         />

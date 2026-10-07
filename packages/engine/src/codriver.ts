@@ -73,6 +73,17 @@ export class CoDriver {
     this.config = resolveConfig(configOverride);
   }
 
+  /**
+   * Mark a corner as already announced.
+   *
+   * Used when the co-driver has to be rebuilt mid-ride (the rider changed the
+   * lead time or verbosity, or the app process was restarted) so that nothing
+   * is called twice.
+   */
+  markCalled(cornerId: number): void {
+    this.called.add(cornerId);
+  }
+
   /** Forget everything except the route - used when a ride is restarted. */
   reset(): void {
     this.lastIndex = null;

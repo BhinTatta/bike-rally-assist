@@ -1,0 +1,46 @@
+# Engine and OSM checks. Fast, runs on everything.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # corepack reads `packageManager` from package.json, so CI uses exactly
+      # the pnpm version the repo pins - no third-party action needed.
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Typecheck the app
+        run: pnpm --filter @rally/mobile exec tsc --noEmit
+
+      # The committed fixtures must still be reproducible from the generator.
+      - name: Fixtures are up to date
+        run: |
+          pnpm rally gen-sample fixtures/sample-ghat.gpx --osm-out fixtures/sample-ghat-osm.json
+          pnpm rally gen-sample fixtures/sample-ghat-planner.gpx --wobble 8
+          git diff --exit-code -- fixtures/

@@ -302,3 +302,24 @@ describe("state for the ride screen", () => {
     expect(state.calledCornerIds).toEqual([]);
   });
 });
+
+describe("rebuilding mid-ride", () => {
+  it("keeps already-announced corners quiet after markCalled", () => {
+    // The app rebuilds the co-driver when the rider changes lead time or
+    // verbosity; the corners already spoken must not come back.
+    const lead = straight(ORIGIN, 0, 600, 20);
+    const bend = arc(last(lead), 0, 35, 90);
+    const tail = straight(last(bend), 90, 400, 20);
+    const route = analyseRoute(join(lead, bend, tail));
+
+    const calls = cornerCalls(ride(route, 50));
+    expect(calls).toHaveLength(1);
+
+    const rebuilt = new CoDriver(route, { runtime: { leadSeconds: 8 } });
+    for (const id of calls[0]!.cornerIds) rebuilt.markCalled(id);
+    // Approach the same corner again from well before it.
+    const before = pointAtDistance(route, route.corners[0]!.startDist - 200);
+    expect(cornerCalls(rebuilt.update({ ...before, speed: 14, time: 0 }))).toHaveLength(0);
+    expect(rebuilt.getState().calledCornerIds).toContain(0);
+  });
+});

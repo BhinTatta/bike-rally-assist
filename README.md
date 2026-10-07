@@ -17,8 +17,8 @@ about to do.
 | --- | --- | --- |
 | **1** | Engine (GPX → corners, runtime co-driver) + CLI + tests | **done** |
 | **2** | OSM road snapping at import time | **done** |
-| 3 | React Native / Expo app (Android first) | not started |
-| 4 | Polish, permissions, docs | not started |
+| **3** | React Native / Expo app (Android first) | **done** |
+| 4 | Polish: U-turns, mid-route starts, full README | partly done |
 
 ## Layout
 
@@ -28,6 +28,7 @@ packages/engine   pure TypeScript: GPX parsing, corner detection, the co-driver.
 packages/osm      optional layer: fetch OSM roads, map-match the GPX onto them.
                   Platform-agnostic (fetch and storage are injected).
 packages/cli      Node developer tools built on both.
+apps/mobile       the Expo app (dev build, Android first, iOS-compatible code).
 fixtures          the synthetic Western Ghats climb, in three forms.
 ```
 

@@ -1,0 +1,163 @@
+# Builds an installable APK and attaches it to the workflow run.
+#
+# Nothing external is needed: no Expo account, no EAS queue, no paid plan.
+# GitHub's Ubuntu runners already have the Android SDK, so this is
+# `expo prebuild` followed by plain Gradle.
+#
+# Signing:
+#   * With no secrets set, Gradle signs the release build with React Native's
+#     template debug keystore. That APK installs and runs fine, and because the
+#     template keystore never changes, later builds upgrade over it in place.
+#   * Set the four ANDROID_* secrets below and it is signed properly instead
+#     (required if you ever want to put it on Play).
+#
+#       ANDROID_KEYSTORE_BASE64   base64 of your .keystore file
+#       ANDROID_KEYSTORE_PASSWORD
+#       ANDROID_KEY_ALIAS
+#       ANDROID_KEY_PASSWORD
+#
+#     Create one with:
+#       keytool -genkeypair -v -storetype PKCS12 -keystore rally.keystore \
+#         -alias rally -keyalg RSA -keysize 2048 -validity 10000
+#       base64 -w0 rally.keystore
+name: Android APK
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Gradle variant to build"
+        type: choice
+        default: release
+        options: [release, debug]
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Metro bundles @rally/engine and @rally/osm from TypeScript source, but
+      # building them here catches a type error before a 20 minute Gradle run.
+      - name: Build workspace packages
+        run: pnpm build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Accept Android SDK licences
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('apps/mobile/package.json', 'pnpm-lock.yaml') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      # `secrets` cannot be used in a step `if:`, so the step always runs and
+      # decides for itself, publishing an empty path when nothing is configured.
+      - name: Decode release keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "path=$RUNNER_TEMP/release.keystore" >> "$GITHUB_OUTPUT"
+            echo "Release keystore configured."
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "No signing secrets: the release build will use the template debug keystore."
+          fi
+
+      # `expo prebuild` regenerates android/ from app.config.ts, so the signing
+      # config has to come from the config plugin rather than a patched file.
+      - name: Generate the Android project
+        working-directory: apps/mobile
+        env:
+          RALLY_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          RALLY_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RALLY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RALLY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Pass the keystore to Gradle
+        if: steps.keystore.outputs.path != ''
+        working-directory: apps/mobile/android
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          {
+            echo "RALLY_KEYSTORE_PATH=$KEYSTORE_PATH"
+            echo "RALLY_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "RALLY_KEY_ALIAS=$KEY_ALIAS"
+            echo "RALLY_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> gradle.properties
+
+      - name: Assemble ${{ inputs.variant || 'release' }}
+        working-directory: apps/mobile/android
+        run: |
+          VARIANT="${{ inputs.variant || 'release' }}"
+          TASK="assemble$(echo "${VARIANT:0:1}" | tr '[:lower:]' '[:upper:]')${VARIANT:1}"
+          ./gradlew "$TASK" --no-daemon --stacktrace \
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+
+      - name: Name the artifact
+        id: apk
+        working-directory: apps/mobile/android
+        run: |
+          FILE=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          echo "path=apps/mobile/android/$FILE" >> "$GITHUB_OUTPUT"
+          echo "name=rally-codriver-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          ls -la "$FILE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+        run: |
+          {
+            echo "### APK ready"
+            echo ""
+            echo "Download it from the **Artifacts** section of this run, copy it to your phone and open it."
+            echo "Android will ask you to allow installing from unknown sources the first time."
+            if [ -z "$KEYSTORE_PATH" ]; then
+              echo ""
+              echo "_Signed with the React Native template debug keystore, because no signing secrets are configured. It installs and upgrades fine; it just cannot go on Play._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

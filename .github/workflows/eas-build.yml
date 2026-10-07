@@ -1,0 +1,43 @@
+# Optional alternative: build on Expo's servers (EAS) instead of on GitHub.
+#
+# Worth it when you want Expo to manage the signing keystore for you, or an
+# over-the-air update channel, or an iOS build without a Mac. It needs an Expo
+# account and an EXPO_TOKEN secret, and the free tier queues behind paid ones.
+#
+# For day-to-day Android APKs, android-apk.yml is faster and needs no account.
+name: EAS Build (optional)
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "EAS build profile"
+        type: choice
+        default: preview
+        options: [preview, production, development]
+
+jobs:
+  build:
+    name: EAS build
+    runs-on: ubuntu-latest
+    if: ${{ vars.USE_EAS == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: apps/mobile
+        run: eas build --platform android --profile ${{ inputs.profile }} --non-interactive --no-wait

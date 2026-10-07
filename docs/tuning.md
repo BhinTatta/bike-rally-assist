@@ -120,3 +120,15 @@ radius is *not* a hairpin by default — it is called "sharp".
 Rejection is not failure: it means "the raw GPX is the better of the two", and
 the import carries on with Phase 1 behaviour. `pnpm rally corners <gpx> --osm`
 prints the reason.
+
+## U-turn detection
+
+| Value | Default | What it does |
+| --- | --- | --- |
+| `uTurnMeters` | 60 m | How much sustained travel *against* the route direction is needed before the co-driver accepts you turned round and starts calling the route backwards. Evidence is one-sided: riding forwards pays the debt back to zero but never into credit, so a U-turn two hours into a ride is noticed just as fast as one two minutes in. Lower it and a roll-back at a junction flips the route; raise it and you ride the first corner of the way home unannounced. |
+| `announceUTurn` | true | Say "riding back" when it flips. |
+
+Riding backwards mirrors each corner: left becomes right, `tightens` becomes
+`opens`, and `into` is re-derived for the new order (corner *n* chains with
+corner *n−1*). The grade, radius and heading change are properties of the road
+and do not change.

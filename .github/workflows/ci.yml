@@ -26,14 +26,17 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Build first: @rally/osm and @rally/cli consume @rally/engine through
+      # its published entry point, so its declarations have to exist before
+      # anything can typecheck or test against them on a clean checkout.
+      - name: Build packages
+        run: pnpm build
+
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Test
         run: pnpm test
-
-      - name: Build packages
-        run: pnpm build
 
       - name: Typecheck the app
         run: pnpm --filter @rally/mobile exec tsc --noEmit

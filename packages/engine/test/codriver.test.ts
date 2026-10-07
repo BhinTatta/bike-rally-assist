@@ -323,3 +323,103 @@ describe("rebuilding mid-ride", () => {
     expect(rebuilt.getState().calledCornerIds).toContain(0);
   });
 });
+
+describe("U-turns", () => {
+  /** A long straight, one 35 m right-hander, a long straight. */
+  const route = (() => {
+    const lead = straight(ORIGIN, 0, 600, 20);
+    const bend = arc(last(lead), 0, 35, 90);
+    const tail = straight(last(bend), 90, 600, 20);
+    return analyseRoute(join(lead, bend, tail));
+  })();
+
+  /** Feed fixes from `from` to `to` metres along the route, 1 Hz. */
+  function rideBetween(
+    codriver: CoDriver,
+    from: number,
+    to: number,
+    startTime: number,
+    speed = 14,
+  ): { calls: Call[]; endTime: number } {
+    const calls: Call[] = [];
+    const step = to > from ? speed : -speed;
+    let time = startTime;
+    for (let d = from; step > 0 ? d <= to : d >= to; d += step) {
+      const here = pointAtDistance(route, Math.max(0, Math.min(route.length, d)));
+      calls.push(...codriver.update({ ...here, speed, time }));
+      time += 1000;
+    }
+    return { calls, endTime: time };
+  }
+
+  it("calls the same corner mirrored after turning round", () => {
+    const corner = route.corners[0]!;
+    expect(corner.direction).toBe("right");
+
+    const codriver = new CoDriver(route);
+    const out = rideBetween(codriver, 100, corner.endDist + 150, 0);
+    const forward = cornerCalls(out.calls);
+    expect(forward).toHaveLength(1);
+    expect(forward[0]!.text).toMatch(/right/);
+    expect(codriver.getState().travelDirection).toBe(1);
+
+    // Turn round and ride back past the same corner.
+    const back = rideBetween(codriver, corner.endDist + 150, 100, out.endTime);
+    expect(codriver.getState().travelDirection).toBe(-1);
+    expect(back.calls.some((c) => c.kind === "reversed")).toBe(true);
+
+    const backwards = cornerCalls(back.calls);
+    expect(backwards).toHaveLength(1);
+    expect(backwards[0]!.cornerIds).toEqual([corner.id]);
+    expect(backwards[0]!.text).toMatch(/left/);
+    expect(backwards[0]!.text).not.toMatch(/right/);
+    // Same severity, mirrored direction.
+    expect(backwards[0]!.text.toLowerCase()).toContain(corner.grade);
+  });
+
+  it("ignores jitter and brief roll-back", () => {
+    const codriver = new CoDriver(route);
+    rideBetween(codriver, 100, 300, 0);
+    // Roll back 20 m at a junction, then carry on.
+    rideBetween(codriver, 300, 280, 20_000, 3);
+    expect(codriver.getState().travelDirection).toBe(1);
+  });
+
+  it("does not re-announce corners behind the rider after the turn", () => {
+    const corner = route.corners[0]!;
+    const codriver = new CoDriver(route);
+    // Start past the corner, then turn round before reaching it again.
+    const out = rideBetween(codriver, corner.endDist + 100, corner.endDist + 400, 0);
+    expect(cornerCalls(out.calls)).toHaveLength(0);
+    const back = rideBetween(codriver, corner.endDist + 400, corner.endDist + 200, out.endTime);
+    expect(codriver.getState().travelDirection).toBe(-1);
+    // The corner is still ahead in the new direction, so it has NOT been called
+    // yet - but nothing behind has been repeated either.
+    expect(cornerCalls(back.calls)).toHaveLength(0);
+    expect(codriver.getState().nextCorner?.id).toBe(corner.id);
+    expect(codriver.getState().nextCorner?.direction).toBe("left");
+  });
+
+  it("mirrors tightens and opens", () => {
+    const lead = straight(ORIGIN, 0, 500, 20);
+    const wide = arc(last(lead), 0, 90, 60);
+    const tight = arc(last(wide), headingAfterArc(0, 60), 25, 70);
+    const tail = straight(last(tight), headingAfterArc(0, 130), 500, 20);
+    const tightening = analyseRoute(join(lead, wide, tight, tail));
+    expect(tightening.corners[0]!.modifiers).toContain("tightens");
+
+    const codriver = new CoDriver(tightening);
+    // Start beyond the corner, riding backwards towards it.
+    const end = tightening.corners[0]!.endDist;
+    let time = 0;
+    const calls: Call[] = [];
+    for (let d = end + 300; d > end - 50; d -= 14) {
+      const here = pointAtDistance(tightening, d);
+      calls.push(...codriver.update({ ...here, speed: 14, time }));
+      time += 1000;
+    }
+    const spoken = cornerCalls(calls);
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0]!.text).toMatch(/opens/);
+  });
+});

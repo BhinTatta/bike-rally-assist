@@ -18,7 +18,7 @@ about to do.
 | **1** | Engine (GPX → corners, runtime co-driver) + CLI + tests | **done** |
 | **2** | OSM road snapping at import time | **done** |
 | **3** | React Native / Expo app (Android first) | **done** |
-| 4 | Polish: U-turns, mid-route starts, full README | partly done |
+| **4** | Polish: permissions, disclaimer, U-turns, GPS loss, README | **done** |
 
 ## Layout
 
@@ -48,8 +48,9 @@ Regenerate them with `pnpm rally gen-sample`.
 
 ```bash
 pnpm install
-pnpm build          # builds engine, then osm, then cli
-pnpm test           # 58 engine tests + 31 OSM tests
+pnpm build          # engine, then osm, then cli - run this first on a fresh
+                    # clone: the other packages consume the engine's build output
+pnpm test           # 59 engine tests + 31 OSM tests
 pnpm typecheck
 ```
 
@@ -233,6 +234,8 @@ Every threshold in that list lives in one object:
 * **Trigger** when the corner is `leadSeconds` (5 s) away, floored at 30 m and
   capped at 300 m, so the warning is useful at 20 km/h and at 90 km/h.
 * **Once each.** A corner already passed is dropped, never announced late.
+* **Direction aware.** Turn round and it notices after 60 m, then calls the
+  route backwards with every corner mirrored.
 * **Chain**: corners marked `into` are spoken in one call, up to three.
 * **Text and tokens.** Every call carries `text` for TTS *and* `tokens`
   (`["sharp", "right", "80", "metres"]`) so pre-recorded clips can be stitched
@@ -248,6 +251,113 @@ for await (const fix of gpsFixes) {
   for (const call of codriver.update(fix)) speak(call.text);
 }
 ```
+
+## The app
+
+### Getting it onto your phone
+
+**The easy way — download the APK.** Every push builds one:
+
+1. Open the repo's **Actions** tab → **Android APK** → the newest run.
+2. Download the artifact (`rally-codriver-<sha>`), unzip it, copy the `.apk` to
+   your phone, tap it.
+3. Android will ask you to allow installing from unknown sources the first
+   time. You can also trigger a build by hand from that page ("Run workflow").
+
+With no signing secrets configured, the APK is signed with React Native's
+template debug keystore. It installs, runs and upgrades over itself perfectly
+well — it just cannot go on Play. To sign it properly, create a keystore and
+add four repository secrets:
+
+```bash
+keytool -genkeypair -v -storetype PKCS12 -keystore rally.keystore \
+  -alias rally -keyalg RSA -keysize 2048 -validity 10000
+base64 -w0 rally.keystore          # -> ANDROID_KEYSTORE_BASE64
+```
+
+then `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+The config plugin at `apps/mobile/plugins/withReleaseSigning.js` picks them up;
+without them it leaves the project alone.
+
+**Why GitHub Actions and not EAS.** EAS (Expo's build service) is the other
+option and `.github/workflows/eas-build.yml` is there if you want it — it
+manages the keystore for you, does OTA updates, and can build iOS without a
+Mac. But it needs an Expo account, the free tier queues behind paying
+customers, and for a personal Android app none of that buys you anything: the
+GitHub runner already has the Android SDK, so `expo prebuild` + Gradle gets you
+an APK in about fifteen minutes with no account at all. Set the `USE_EAS`
+repository variable to `true` if you want the EAS workflow enabled.
+
+### Developing on your phone
+
+This is a **dev build**, not Expo Go — background location, the foreground
+service and MapLibre are all native modules Expo Go does not contain.
+
+```bash
+pnpm install
+pnpm build                      # the app bundles the engine from source, but
+                                # build once so typecheck and the CLI work
+
+cd apps/mobile
+npx expo run:android            # builds and installs a debug build over USB
+```
+
+You need Android Studio (or just the SDK + platform tools), USB debugging on,
+and JDK 17. After the first `run:android`, day-to-day work is just:
+
+```bash
+cd apps/mobile && pnpm start    # Metro; the dev build connects to it
+```
+
+Edits in `packages/engine` hot-reload too — Metro bundles the engine from
+TypeScript source (see the resolver note in `metro.config.js`).
+
+### What it does while you ride
+
+* **Foreground service at 1 Hz.** `BestForNavigation`, automatic pausing turned
+  off (Android otherwise stops updates when it decides you have parked, which
+  is every ghat traffic jam). The persistent notification is not decoration:
+  on Android 14+ it is the only way to keep getting fixes with the screen off.
+* **The engine runs in the background task**, not in the UI. If Android kills
+  and restarts the process mid-ride, the task rebuilds the co-driver from
+  storage and carries on; nothing is re-announced, because every corner behind
+  the first fix is marked as already called.
+* **Audio.** The session ducks music rather than stopping it. A near-silent
+  generated loop holds the stream open for the whole ride, because Bluetooth
+  headsets power their receiver down after a few seconds of silence and then
+  clip the first word — which is exactly "sharp" or "left". Calls queue and
+  never overlap, and a call whose corner you have already reached is dropped
+  rather than spoken late.
+* **Battery optimisation.** Settings has a button for the exemption, and says
+  why: Xiaomi, Oppo, Vivo, Realme and OnePlus kill background apps far harder
+  than stock Android. Those ROMs usually also need "Autostart" enabled in their
+  own security app, which no API can do for you.
+
+### Ride logging and tuning
+
+Every ride is saved as a GPX plus a JSON log of every call (time, position,
+corner, speed). Export both from the **Rides** screen, then on a computer:
+
+```bash
+pnpm rally simulate route.gpx --replay ride.gpx
+```
+
+That replays your actual ride through the engine and prints what it said and
+when. Change a threshold, re-run, compare. Every value and its effect is
+documented in [docs/tuning.md](docs/tuning.md).
+
+### Things it handles that are easy to get wrong
+
+| Situation | What happens |
+| --- | --- |
+| Starting mid-route | Corners already behind you are never announced |
+| Stopping | No calls below 1.5 m/s; the ride stays live |
+| **U-turn** | After 60 m of sustained travel the other way it says "riding back" and calls the route in reverse — every corner mirrored, left for right, tightens for opens |
+| Riding off the route | "Off route", once; it re-acquires globally and says "back on route" |
+| GPS dying | "GPS lost" after 5 s, "GPS back" when fixes return |
+| Bad fixes | Anything worse than 50 m accuracy is discarded outright |
+| Two corners together | Chained into one call: "sharp right, 80 metres, into medium left" |
+| Reaching the end | "Route finished", once |
 
 ## Licence
 

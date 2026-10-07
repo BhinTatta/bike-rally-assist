@@ -115,6 +115,7 @@ const STATUS_PHRASES: Record<string, { text: string; tokens: string[] }> = {
   "gps-restored": { text: "GPS back", tokens: ["gps", "back"] },
   "route-start": { text: "Route started", tokens: ["route", "started"] },
   "route-end": { text: "Route finished", tokens: ["route", "finished"] },
+  reversed: { text: "Riding back", tokens: ["riding", "back"] },
 };
 
 export function buildStatusCall(

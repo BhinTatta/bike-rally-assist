@@ -119,6 +119,17 @@ export interface RuntimeConfig {
   maxChainedCorners: number;
   /** Say "back on route" after an off-route excursion ends. */
   announceBackOnRoute: boolean;
+  /**
+   * Sustained travel against the route direction before a U-turn is accepted
+   * and the route starts being called backwards. Metres.
+   *
+   * Big enough that GPS jitter, a stop, or rolling back at a junction never
+   * triggers it; small enough that turning round at a viewpoint is picked up
+   * before the next corner arrives.
+   */
+  uTurnMeters: number;
+  /** Say something when the route starts being called in reverse. */
+  announceUTurn: boolean;
   /** Say "route finished" within this distance of the end. Metres. */
   routeEndMeters: number;
 }
@@ -191,6 +202,8 @@ export const DEFAULT_CONFIG: EngineConfig = {
     chainIntoCorners: true,
     maxChainedCorners: 3,
     announceBackOnRoute: true,
+    uTurnMeters: 60,
+    announceUTurn: true,
     routeEndMeters: 50,
   },
 };

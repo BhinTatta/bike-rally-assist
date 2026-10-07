@@ -113,7 +113,8 @@ export type CallKind =
   | "gps-lost"
   | "gps-restored"
   | "route-start"
-  | "route-end";
+  | "route-end"
+  | "reversed";
 
 /**
  * A single utterance. `text` is for TTS; `tokens` is the same thing split into

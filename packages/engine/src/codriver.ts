@@ -26,6 +26,8 @@ import type {
 export interface CoDriverState {
   /** Distance along the route, metres; null before the first usable fix. */
   dist: number | null;
+  /** +1 riding the route as drawn, -1 riding back along it after a U-turn. */
+  travelDirection: 1 | -1;
   /** Lag-compensated distance used for triggering, metres. */
   projectedDist: number | null;
   /** Perpendicular distance from the route, metres. */
@@ -66,6 +68,10 @@ export class CoDriver {
   private gpsOk = true;
   private gpsLostAnnounced = false;
   private finished = false;
+  /** +1 riding the route as drawn, -1 riding back along it. */
+  private travelDirection: 1 | -1 = 1;
+  /** Signed metres of consistent travel, used to decide a U-turn happened. */
+  private directionEvidence = 0;
   private readonly called = new Set<number>();
 
   constructor(route: AnalysedRoute, configOverride?: DeepPartial<EngineConfig>) {
@@ -100,6 +106,8 @@ export class CoDriver {
     this.gpsOk = true;
     this.gpsLostAnnounced = false;
     this.finished = false;
+    this.travelDirection = 1;
+    this.directionEvidence = 0;
     this.called.clear();
   }
 
@@ -107,6 +115,7 @@ export class CoDriver {
     const next = this.findNextCorner();
     return {
       dist: this.lastDist,
+      travelDirection: this.travelDirection,
       projectedDist: this.projectedDist,
       offset: this.offset,
       onRoute: this.onRoute,
@@ -176,6 +185,7 @@ export class CoDriver {
     const snap = this.snap(fix);
     this.speed = this.estimateSpeed(fix, snap);
     const wasOnRoute = this.onRoute;
+    const previousDist = this.lastDist;
     this.lastIndex = snap.index;
     this.lastDist = snap.dist;
     this.offset = snap.offset;
@@ -199,39 +209,44 @@ export class CoDriver {
       }
     }
 
-    // 4. Lag compensation: by the time the words land in the rider's ear, the
+    // 4. Which way along the route are we actually going? A ghat ride is very
+    //    often out and back, and after turning round every corner is a mirror
+    //    image of the one in the file.
+    const reversedCall = this.trackDirection(previousDist, snap.dist, fix.time);
+    if (reversedCall) calls.push(reversedCall);
+
+    // 5. Lag compensation: by the time the words land in the rider's ear, the
     //    bike has moved. Trigger from where it will be, not where it was.
-    const projected = snap.dist + this.speed * runtime.lagSeconds;
+    const projected = snap.dist + this.speed * runtime.lagSeconds * this.travelDirection;
     const isFirstFix = this.projectedDist === null;
     this.projectedDist = projected;
     this.lastFix = fix;
     this.lastFixTime = fix.time;
 
-    // 5. Starting mid-route: never announce corners that are already behind.
-    if (isFirstFix) {
-      for (const corner of this.route.corners) {
-        if (corner.endDist < projected) this.called.add(corner.id);
-      }
-    }
+    // 6. Starting mid-route: never announce corners that are already behind.
+    if (isFirstFix) this.silenceCornersBehind(projected);
 
-    // 6. Corners we have driven through without calling (too slow, bad fixes,
+    // 7. Corners we have driven through without calling (too slow, bad fixes,
     //    off-route detour) must not pop out late.
     for (const corner of this.route.corners) {
-      if (!this.called.has(corner.id) && corner.startDist < projected) {
+      if (!this.called.has(corner.id) && this.isPastEntry(corner, projected)) {
         this.called.add(corner.id);
       }
     }
 
-    // 7. Route end.
-    if (
-      !this.finished &&
-      this.route.length - snap.dist <= runtime.routeEndMeters
-    ) {
+    // 8. Route end - whichever end we are heading for.
+    const toEnd =
+      this.travelDirection === 1 ? this.route.length - snap.dist : snap.dist;
+    if (!this.finished && toEnd <= runtime.routeEndMeters) {
       this.finished = true;
       calls.push(buildStatusCall("route-end", fix.time, snap.dist));
+    } else if (this.finished && toEnd > runtime.routeEndMeters) {
+      // Rode away from the end again (a U-turn at the top): allow it to fire
+      // once more when the other end arrives.
+      this.finished = false;
     }
 
-    // 8. The actual corner call.
+    // 9. The actual corner call.
     const cornerCall = this.maybeCallCorner(projected, fix.time, snap.dist);
     if (cornerCall) calls.push(cornerCall);
     return calls;
@@ -330,12 +345,108 @@ export class CoDriver {
     };
   }
 
+  // --------------------------------------------------------- travel direction
+
+  /**
+   * Work out whether the rider is still going the way the route was drawn.
+   *
+   * Evidence accumulates: every metre forward cancels a metre back. Only when
+   * `uTurnMeters` of *consistent* travel the other way has piled up is the
+   * U-turn accepted - a stop, a wobble, or GPS drift never gets there.
+   */
+  private trackDirection(
+    previousDist: number | null,
+    dist: number,
+    time: number,
+  ): Call | null {
+    const { runtime } = this.config;
+    if (previousDist === null || this.speed < runtime.minSpeedForCalls) return null;
+
+    const delta = dist - previousDist;
+    const limit = runtime.uTurnMeters;
+    // Evidence only ever measures travel *against* the current direction, and
+    // travel with it pays that debt back down to zero - never into credit.
+    // Otherwise an hour of riding forwards would bank so much credit that a
+    // genuine U-turn took a kilometre to notice.
+    const raw = this.directionEvidence + delta;
+    this.directionEvidence =
+      this.travelDirection === 1
+        ? Math.max(-limit * 1.5, Math.min(0, raw))
+        : Math.min(limit * 1.5, Math.max(0, raw));
+
+    const goingBackwards = this.travelDirection === 1 && this.directionEvidence <= -limit;
+    const goingForwards = this.travelDirection === -1 && this.directionEvidence >= limit;
+    if (!goingBackwards && !goingForwards) return null;
+
+    this.travelDirection = goingBackwards ? -1 : 1;
+    this.directionEvidence = 0;
+    // The whole route is new again from this direction, and every corner is
+    // mirrored, so nothing that was called before applies.
+    this.called.clear();
+    this.silenceCornersBehind(dist);
+    this.finished = false;
+    return runtime.announceUTurn ? buildStatusCall("reversed", time, dist) : null;
+  }
+
+  /** Where a corner begins, in the direction of travel. */
+  private entryOf(corner: Corner): number {
+    return this.travelDirection === 1 ? corner.startDist : corner.endDist;
+  }
+
+  /** Has the rider already crossed this corner's entry? */
+  private isPastEntry(corner: Corner, projected: number): boolean {
+    return this.travelDirection === 1
+      ? corner.startDist < projected
+      : corner.endDist > projected;
+  }
+
+  /** Mark everything behind the rider as already dealt with. */
+  private silenceCornersBehind(projected: number): void {
+    for (const corner of this.route.corners) {
+      const exit = this.travelDirection === 1 ? corner.endDist : corner.startDist;
+      const behind = this.travelDirection === 1 ? exit < projected : exit > projected;
+      if (behind) this.called.add(corner.id);
+    }
+  }
+
+  /**
+   * How a corner reads when ridden the other way: a right becomes a left, and
+   * a corner that tightened on the way up opens on the way down.
+   */
+  private asTravelled(corner: Corner): Corner {
+    if (this.travelDirection === 1) return corner;
+    return {
+      ...corner,
+      direction: corner.direction === "left" ? "right" : "left",
+      modifiers: corner.modifiers
+        // "into" points at the next corner in route order, which is behind us
+        // now; the chaining logic re-derives it for this direction.
+        .filter((m) => m !== "into")
+        .map((m) => (m === "tightens" ? "opens" : m === "opens" ? "tightens" : m)),
+    };
+  }
+
+  /** The corner chained onto `corner` in the current direction, if any. */
+  private chainedAfter(corner: Corner): Corner | undefined {
+    const corners = this.route.corners;
+    if (this.travelDirection === 1) {
+      return corner.modifiers.includes("into") ? corners[corner.id + 1] : undefined;
+    }
+    // Riding back: corner i is followed by corner i-1, and they are chained
+    // when the gap between them was short enough in the first place.
+    const previous = corners[corner.id - 1];
+    return previous?.modifiers.includes("into") === true ? previous : undefined;
+  }
+
   private findNextCorner(): Corner | undefined {
     const d = this.projectedDist;
     if (d === null) return undefined;
-    return this.route.corners.find(
-      (c) => !this.called.has(c.id) && c.startDist >= d,
+    const corners =
+      this.travelDirection === 1 ? this.route.corners : [...this.route.corners].reverse();
+    const found = corners.find(
+      (c) => !this.called.has(c.id) && !this.isPastEntry(c, d),
     );
+    return found ? this.asTravelled(found) : undefined;
   }
 
   /** Decide whether the next corner is due, and build the call if it is. */
@@ -347,16 +458,17 @@ export class CoDriver {
     const { runtime } = this.config;
     if (this.speed < runtime.minSpeedForCalls) return null;
 
-    const corners = this.route.corners;
+    const corners =
+      this.travelDirection === 1 ? this.route.corners : [...this.route.corners].reverse();
     const next = corners.find(
       (c) =>
         !this.called.has(c.id) &&
-        c.startDist >= projected &&
+        !this.isPastEntry(c, projected) &&
         c.rallyNumber <= runtime.maxRallyNumberToCall,
     );
     if (!next) return null;
 
-    const distance = next.startDist - projected;
+    const distance = (this.entryOf(next) - projected) * this.travelDirection;
     // Warn `leadSeconds` ahead, clamped so the call is neither a surprise at
     // walking pace nor a distant rumour at 90 km/h.
     const trigger = Math.min(
@@ -367,12 +479,9 @@ export class CoDriver {
 
     const group = [next];
     if (runtime.chainIntoCorners) {
-      let current = next;
-      while (
-        group.length < runtime.maxChainedCorners &&
-        current.modifiers.includes("into")
-      ) {
-        const following = corners[current.id + 1];
+      let current: Corner | undefined = next;
+      while (group.length < runtime.maxChainedCorners && current) {
+        const following: Corner | undefined = this.chainedAfter(current);
         if (!following) break;
         group.push(following);
         current = following;
@@ -382,7 +491,7 @@ export class CoDriver {
 
     return buildCornerCall(
       {
-        corners: group,
+        corners: group.map((c) => this.asTravelled(c)),
         distance,
         timeToCorner: this.speed > 0 ? distance / this.speed : Infinity,
         time,

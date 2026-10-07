@@ -62,7 +62,7 @@ export function RoutesScreen({ navigation }: Props) {
         if (result.osmNote) {
           Alert.alert(
             "Imported from the GPX as-is",
-            `OSM road data was not used: ${result.osmNote}\n\nCorners were found from the file itself, which is fine - just less precise if the file was drawn by hand.`,
+            `Road data was not used — ${result.osmNote}.\n\nCorners came from the file itself. That works fine; it is just less precise if the route was drawn by hand. Re-import with a connection to improve it.`,
           );
         }
         navigation.navigate("RoutePreview", { routeId: result.summary.id });

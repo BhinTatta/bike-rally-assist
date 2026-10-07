@@ -22,6 +22,14 @@ export interface OsmConfig {
   corridorMeters: number;
   /** The route is split into chunks of this length, one bbox each. Metres. */
   corridorChunkMeters: number;
+  /**
+   * Most bounding boxes to put in a single Overpass query.
+   *
+   * A 127 km import is 26 boxes, and asking for all of them at once is a query
+   * Overpass will usually refuse or time out on - it is a free, shared service.
+   * Several smaller requests get through where one big one does not.
+   */
+  maxBoxesPerRequest: number;
   /** OSM `highway=*` values worth riding. */
   highwayTypes: string[];
   /** Cache entries older than this are refetched. Milliseconds. */
@@ -66,6 +74,7 @@ export const DEFAULT_OSM_CONFIG: OsmConfig = {
   retryBackoffMs: 1500,
   corridorMeters: 150,
   corridorChunkMeters: 5000,
+  maxBoxesPerRequest: 6,
   highwayTypes: [
     "motorway",
     "trunk",

@@ -12,6 +12,7 @@ import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 
 import { rideEngine } from "./rideEngine";
+import { recordCrash, setPhase } from "../diagnostics";
 
 export const LOCATION_TASK = "rally-location-updates";
 
@@ -27,7 +28,15 @@ TaskManager.defineTask<LocationTaskData>(LOCATION_TASK, async ({ data, error }) 
   }
   const locations = data?.locations ?? [];
   if (locations.length === 0) return;
-  await rideEngine.handleLocations(locations);
+  try {
+    setPhase("location-task");
+    await rideEngine.handleLocations(locations);
+  } catch (taskError) {
+    // An exception escaping a TaskManager callback takes the whole app down in
+    // a release build. Record it and drop the batch: the next fix is a second
+    // away, and a ride that misses one call beats a ride that ends.
+    recordCrash(taskError, false);
+  }
 });
 
 /**

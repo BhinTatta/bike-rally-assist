@@ -31,12 +31,15 @@ import {
 } from "../storage/settings";
 import { rideEngine } from "../ride/rideEngine";
 import { openBatteryOptimisationSettings } from "../ride/permissions";
+import { clearLastCrash, readLastCrash, type CrashRecord } from "../diagnostics";
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [crash, setCrash] = useState<CrashRecord | null>(null);
 
   useEffect(() => {
     void loadSettings().then(setSettings);
+    setCrash(readLastCrash());
   }, []);
 
   const update = useCallback(
@@ -209,6 +212,29 @@ export function SettingsScreen() {
           style={styles.spaced}
         />
       </Card>
+
+      {crash ? (
+        <>
+          <SectionHeader>Diagnostics</SectionHeader>
+          <Card>
+            <Title>Last error</Title>
+            <Subtitle>
+              {`${new Date(crash.time).toLocaleString()} — during ${crash.phase}`}
+            </Subtitle>
+            <Body>{`${crash.name}: ${crash.message}`}</Body>
+            {crash.stack ? <Body dim>{crash.stack.split("\n").slice(0, 6).join("\n")}</Body> : null}
+            <Button
+              label="Clear"
+              kind="ghost"
+              style={styles.spaced}
+              onPress={() => {
+                clearLastCrash();
+                setCrash(null);
+              }}
+            />
+          </Card>
+        </>
+      ) : null}
 
       <Card>
         <Title>Reset</Title>

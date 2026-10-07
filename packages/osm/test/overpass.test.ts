@@ -3,6 +3,7 @@ import {
   buildQuery,
   cacheKey,
   corridorBoxes,
+  describeFetchError,
   fetchRoadNetwork,
   padBox,
   parseOverpass,
@@ -145,13 +146,94 @@ describe("fetching", () => {
     expect(network.ways).toHaveLength(3);
   });
 
-  it("gives up with a clear message when every endpoint fails", async () => {
+  it("gives up with a message a rider can act on", async () => {
     const fetchImpl: FetchLike = async () => {
-      throw new Error("network unreachable");
+      throw new Error(
+        "fetch failed: java.net.UnknownHostException: Unable to resolve host \"overpass.kumi.systems\"",
+      );
     };
     await expect(
       fetchRoadNetwork(road, { fetch: fetchImpl, config: { retries: 0 } }),
-    ).rejects.toThrow(/network unreachable/);
+    ).rejects.toThrow(/no internet connection/);
+  });
+
+  it("translates the failures that actually happen on a hillside", () => {
+    const cases: [string, RegExp][] = [
+      ["fetch failed: java.net.UnknownHostException", /no internet/],
+      ["Network request failed", /no internet/],
+      ["The operation was aborted", /did not answer in time/],
+      ["Overpass returned HTTP 429", /rate-limiting/],
+      ["Overpass returned HTTP 504", /overloaded/],
+    ];
+    for (const [message, expected] of cases) {
+      expect(describeFetchError(new Error(message))).toMatch(expected);
+    }
+  });
+
+  it("splits a long route over several requests and merges the results", async () => {
+    // 60 km: 12 corridor boxes, which at 6 per request is two Overpass calls.
+    const long = Array.from({ length: 200 }, (_, i) =>
+      destination({ lat: 18.45, lon: 73.41 }, i * 300, 45),
+    );
+    const queries: string[] = [];
+    const fetchImpl: FetchLike = async (_url, init) => {
+      const query = decodeURIComponent((init?.body ?? "").replace(/^data=/, ""));
+      queries.push(query);
+      // Each request answers with a way whose id depends on the request, so a
+      // merge failure would show up as a missing way.
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            elements: [
+              {
+                type: "way",
+                id: 500 + queries.length,
+                tags: { highway: "primary" },
+                geometry: [
+                  { lat: 18.45, lon: 73.41 },
+                  { lat: 18.46, lon: 73.42 },
+                ],
+              },
+            ],
+          }),
+      };
+    };
+
+    const network = await fetchRoadNetwork(long, { fetch: fetchImpl });
+    expect(queries.length).toBeGreaterThan(1);
+    for (const query of queries) {
+      expect(query.match(/way\["highway"/g)!.length).toBeLessThanOrEqual(6);
+    }
+    // One way per request, all merged into the result.
+    expect(network.ways.map((w) => w.id)).toEqual(
+      queries.map((_, i) => 501 + i),
+    );
+    expect(network.boxes.length).toBeGreaterThan(6);
+  });
+
+  it("deduplicates ways that two batches both return", async () => {
+    const long = Array.from({ length: 200 }, (_, i) =>
+      destination({ lat: 18.45, lon: 73.41 }, i * 300, 45),
+    );
+    const same = JSON.stringify({
+      elements: [
+        {
+          type: "way",
+          id: 77,
+          tags: { highway: "primary" },
+          geometry: [
+            { lat: 18.45, lon: 73.41 },
+            { lat: 18.46, lon: 73.42 },
+          ],
+        },
+      ],
+    });
+    const network = await fetchRoadNetwork(long, {
+      fetch: async () => ({ ok: true, status: 200, text: async () => same }),
+    });
+    expect(network.ways).toHaveLength(1);
   });
 });
 
@@ -199,7 +281,7 @@ describe("snapRouteToOsm", () => {
     });
     expect(result.usedOsm).toBe(false);
     expect(result.geometry).toHaveLength(gpx.length);
-    expect(result.error).toMatch(/ETIMEDOUT/);
+    expect(result.error).toMatch(/did not answer in time/);
   });
 
   it("ignores a corrupt cache entry instead of failing the import", async () => {

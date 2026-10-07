@@ -111,6 +111,29 @@ export function parseOverpass(json: string, boxes: BoundingBox[]): RoadNetwork {
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Turn a transport-level failure into something a rider can act on.
+ *
+ * "fetch failed: java.net.UnknownHostException: Unable to resolve host" is a
+ * true and completely useless thing to show someone on a hillside.
+ */
+export function describeFetchError(error: Error): string {
+  const message = error.message;
+  if (
+    /UnknownHost|ENOTFOUND|EAI_AGAIN|Unable to resolve host|Network request failed|ECONNREFUSED|ENETUNREACH|fetch failed/i.test(
+      message,
+    )
+  ) {
+    return "no internet connection";
+  }
+  if (/abort|ETIMEDOUT|timeout/i.test(message)) {
+    return "the road data server did not answer in time";
+  }
+  if (/HTTP 429/.test(message)) return "the road data server is rate-limiting us";
+  if (/HTTP 50\d/.test(message)) return "the road data server is overloaded";
+  return message;
+}
+
 export interface FetchOptions {
   fetch?: FetchLike;
   config?: Partial<OsmConfig>;
@@ -135,14 +158,40 @@ export async function fetchRoadNetwork(
     throw new Error("no fetch implementation available; pass options.fetch");
   }
   const boxes = corridorBoxes(points, config);
+
+  // Long routes go in several smaller requests and the results are merged.
+  const batches: BoundingBox[][] = [];
+  for (let i = 0; i < boxes.length; i += config.maxBoxesPerRequest) {
+    batches.push(boxes.slice(i, i + config.maxBoxesPerRequest));
+  }
+
+  const ways = new Map<number, OsmWay>();
+  for (let b = 0; b < batches.length; b++) {
+    const batch = batches[b]!;
+    const label = batches.length > 1 ? ` (part ${b + 1} of ${batches.length})` : "";
+    const network = await fetchOneBatch(doFetch, batch, config, label, options.onProgress);
+    for (const way of network.ways) ways.set(way.id, way);
+  }
+  options.onProgress?.(`Got ${ways.size} ways`);
+  return { ways: [...ways.values()], boxes, fetchedAt: Date.now() };
+}
+
+/** One Overpass request, with retries and endpoint failover. */
+async function fetchOneBatch(
+  doFetch: FetchLike,
+  boxes: BoundingBox[],
+  config: OsmConfig,
+  label: string,
+  onProgress?: (message: string) => void,
+): Promise<RoadNetwork> {
   const query = buildQuery(boxes, config);
 
   let lastError: Error | undefined;
   for (const endpoint of config.endpoints) {
     for (let attempt = 0; attempt <= config.retries; attempt++) {
       try {
-        options.onProgress?.(
-          `Fetching roads from ${new URL(endpoint).host} (${boxes.length} box${boxes.length === 1 ? "" : "es"})`,
+        onProgress?.(
+          `Fetching roads from ${hostOf(endpoint)}${label}`,
         );
         const controller =
           typeof AbortController !== "undefined" ? new AbortController() : undefined;
@@ -163,9 +212,7 @@ export async function fetchRoadNetwork(
         if (!response.ok) {
           throw new Error(`Overpass returned HTTP ${response.status}`);
         }
-        const network = parseOverpass(await response.text(), boxes);
-        options.onProgress?.(`Got ${network.ways.length} ways`);
-        return network;
+        return parseOverpass(await response.text(), boxes);
       } catch (error) {
         lastError = error as Error;
         if (attempt < config.retries) {
@@ -174,7 +221,15 @@ export async function fetchRoadNetwork(
       }
     }
   }
-  throw new Error(`Overpass request failed: ${lastError?.message ?? "unknown error"}`);
+  throw new Error(
+    lastError ? describeFetchError(lastError) : "the road data request failed",
+  );
+}
+
+/** Host name for progress messages, without assuming URL is available. */
+function hostOf(endpoint: string): string {
+  const match = /^https?:\/\/([^/]+)/i.exec(endpoint);
+  return match?.[1] ?? endpoint;
 }
 
 /** Stable cache key for a corridor query: same route and settings, same key. */

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Alert, StyleSheet, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { useIsFocused } from "@react-navigation/native";
 import type { AnalysedRoute } from "@rally/engine";
 
 import { Body, Button, Card, GradeBadge, Row, SectionHeader, Stat, Subtitle, Title, Screen } from "../ui/components";
@@ -27,6 +28,10 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
   const [route, setRoute] = useState<AnalysedRoute | null>(null);
   const [summary, setSummary] = useState<RouteSummary | null>(null);
   const [starting, setStarting] = useState(false);
+  // A native-stack screen stays mounted underneath the one pushed on top of
+  // it. A MapLibre surface holding a long route is far too expensive to leave
+  // running behind the ride screen, so it is torn down when not on screen.
+  const isFocused = useIsFocused();
 
   useEffect(() => {
     void (async () => {
@@ -70,7 +75,9 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
         return;
       }
 
-      const begun = await rideEngine.begin(routeId);
+      // Hand over the route we already have rather than reading and parsing
+      // the whole thing a second time - it is 3.7 MB for a 127 km import.
+      const begun = await rideEngine.begin(routeId, route ?? undefined);
       if (!begun.ok) {
         Alert.alert("Could not start the ride", begun.error);
         return;
@@ -97,7 +104,11 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
 
   return (
     <Screen>
-      <RouteMap route={route} style={styles.map} />
+      {isFocused ? (
+        <RouteMap route={route} style={styles.map} />
+      ) : (
+        <View style={styles.map} />
+      )}
 
       <Card>
         <Row>

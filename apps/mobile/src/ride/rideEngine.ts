@@ -95,8 +95,12 @@ class RideEngine {
    * Prepare everything for a ride. The caller starts the location updates
    * (which needs permissions, and therefore the UI) once this resolves.
    */
-  async begin(routeId: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    const route = await loadRoute(routeId);
+  async begin(
+    routeId: string,
+    /** Pass an already-loaded route to avoid parsing megabytes twice. */
+    preloaded?: AnalysedRoute,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const route = preloaded ?? (await loadRoute(routeId));
     if (!route) return { ok: false, error: "That route could not be loaded." };
 
     const settings = await loadSettings();

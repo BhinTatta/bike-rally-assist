@@ -16,9 +16,14 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { Corner } from "@rally/engine";
 
 import { Button } from "../ui/components";
-import { colors, gradeColor, radius, spacing } from "../ui/theme";
+import { colors, gradeColor, spacing } from "../ui/theme";
 import { rideEngine, type RideSnapshot } from "../ride/rideEngine";
 import { stopLocationUpdates } from "../ride/locationTask";
+import {
+  markRideScreenHealthy,
+  markRideScreenOpened,
+  setPhase,
+} from "../diagnostics";
 import type { RootStackParamList } from "../navigation";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Ride">;
@@ -31,6 +36,23 @@ export function RideScreen({ navigation }: Props) {
   const [snapshot, setSnapshot] = useState<RideSnapshot>(rideEngine.getSnapshot());
 
   useEffect(() => rideEngine.subscribe(setSnapshot), []);
+
+  /**
+   * Crash-loop guard. The marker written here is cleared only once the screen
+   * has survived long enough to be trusted; if the app dies in between - even
+   * from a native crash, which no JavaScript handler can see - the next launch
+   * finds the marker and refuses to walk straight back in.
+   */
+  useEffect(() => {
+    setPhase("ride-screen");
+    markRideScreenOpened(rideEngine.getSnapshot().routeName || "route");
+    const healthy = setTimeout(markRideScreenHealthy, 8000);
+    return () => {
+      clearTimeout(healthy);
+      markRideScreenHealthy();
+      setPhase("app");
+    };
+  }, []);
 
   const stop = useCallback(() => {
     Alert.alert("Stop the ride?", "The ride will be saved and the corner calls will stop.", [

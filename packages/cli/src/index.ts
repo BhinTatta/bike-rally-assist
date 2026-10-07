@@ -13,6 +13,7 @@ import { cornersCommand } from "./commands/corners.js";
 import { simulateCommand } from "./commands/simulate.js";
 import { debugMapCommand } from "./commands/debugMap.js";
 import { genSampleCommand } from "./commands/genSample.js";
+import { osmFetchCommand } from "./commands/osmFetch.js";
 import { bold, COMMON_FLAG_HELP, dim, red } from "./util.js";
 
 const HELP = `${bold("rally")} - rally co-driver developer tools
@@ -21,7 +22,8 @@ ${bold("Usage")}
   rally corners <route.gpx> [options]
   rally simulate <route.gpx> [options]
   rally debug-map <route.gpx> [options]
-  rally gen-sample <out.gpx>
+  rally osm-fetch <route.gpx> [--out roads.json]
+  rally gen-sample <out.gpx> [--osm-out roads.json] [--wobble 8]
 
 ${bold("corners")}      parse a GPX, detect corners, print a table and write corners.json
   --out <file>       output JSON path (default corners.json)
@@ -40,9 +42,15 @@ ${COMMON_FLAG_HELP}
 ${bold("debug-map")}    write a standalone Leaflet HTML map, corners coloured by grade
   --out <file>       output HTML path (default debug-map.html)
 ${COMMON_FLAG_HELP}
+
+${bold("osm-fetch")}    download and cache the OSM roads along a route (warm the
+             cache before a ride with no signal)
+  --out <file>       also save the raw Overpass response, replayable with --osm-file
+  --print-query      print the Overpass QL instead of sending it
+  --cache-dir <dir>  cache location (default ./.rally-cache)
 `;
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -62,6 +70,13 @@ function main(argv: string[]): number {
       lag: { type: "string" },
       rally: { type: "boolean" },
       "max-number": { type: "string" },
+      osm: { type: "boolean" },
+      offline: { type: "boolean" },
+      "cache-dir": { type: "string" },
+      "osm-file": { type: "string" },
+      "print-query": { type: "boolean" },
+      "osm-out": { type: "string" },
+      wobble: { type: "string" },
     },
   });
 
@@ -78,16 +93,19 @@ function main(argv: string[]): number {
 
   switch (command) {
     case "corners":
-      cornersCommand(needsFile(), values);
+      await cornersCommand(needsFile(), values);
       return 0;
     case "simulate":
-      simulateCommand(needsFile(), values);
+      await simulateCommand(needsFile(), values);
       return 0;
     case "debug-map":
-      debugMapCommand(needsFile(), values);
+      await debugMapCommand(needsFile(), values);
+      return 0;
+    case "osm-fetch":
+      await osmFetchCommand(needsFile(), values);
       return 0;
     case "gen-sample":
-      genSampleCommand(needsFile());
+      genSampleCommand(needsFile(), values);
       return 0;
     default:
       console.error(red(`Unknown command "${command}"`));
@@ -97,7 +115,7 @@ function main(argv: string[]): number {
 }
 
 try {
-  process.exitCode = main(process.argv.slice(2));
+  process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
   console.error(red(`rally: ${(error as Error).message}`));
   process.exitCode = 1;

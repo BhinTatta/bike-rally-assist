@@ -1,10 +1,15 @@
 /**
- * `rally gen-sample <out.gpx>` - build a synthetic ghat road.
+ * `rally gen-sample <out.gpx>` - build the synthetic ghat road fixtures.
  *
- * This is how fixtures/sample-ghat.gpx was made: a climb with hairpins,
- * sweepers, an S-bend and a couple of straights, at a realistic Western Ghats
- * latitude. Having it as a command (rather than a one-off script) means the
- * fixture can be regenerated after any geometry change.
+ * One road, two representations:
+ *
+ *   the GPX   - what a route planner exports: sparse, with hairpins drawn as
+ *               three points, which is exactly how Indian ghat roads arrive.
+ *   --osm-out - what OSM has for the same road: dense surveyed geometry, split
+ *               into several ways that share their junction nodes.
+ *
+ * Having both lets `--osm-file` demonstrate (and test) the whole Phase 2
+ * snapping path with no network and no load on the Overpass servers.
  */
 
 import { writeFileSync } from "node:fs";
@@ -12,14 +17,51 @@ import { destination, toGpx } from "@rally/engine";
 import type { GeoPoint } from "@rally/engine";
 import { dim } from "../util.js";
 
-/** Sprinkle points along a straight. */
+/** One piece of road: a straight run or a constant-radius bend. */
+type Piece =
+  | { kind: "run"; length: number; gpxStep: number }
+  | { kind: "bend"; radius: number; sweep: number; gpxStep: number };
+
+/**
+ * The road itself. `gpxStep` is how far apart the planner's points are for
+ * that piece - tight corners deliberately get very few points.
+ */
+const ROAD: Piece[] = [
+  { kind: "run", length: 400, gpxStep: 50 },
+  { kind: "bend", radius: 60, sweep: 70, gpxStep: 10 }, // medium right onto the climb
+  { kind: "run", length: 150, gpxStep: 25 },
+  { kind: "bend", radius: 45, sweep: -80, gpxStep: 10 }, // sharp left
+  { kind: "run", length: 60, gpxStep: 25 },
+  { kind: "bend", radius: 16, sweep: 170, gpxStep: 18 }, // hairpin right, 3 points
+  { kind: "run", length: 120, gpxStep: 25 },
+  { kind: "bend", radius: 18, sweep: -165, gpxStep: 20 }, // hairpin left, 3 points
+  { kind: "run", length: 90, gpxStep: 25 },
+  { kind: "bend", radius: 110, sweep: 50, gpxStep: 10 }, // gentle sweeper
+  { kind: "bend", radius: 35, sweep: -75, gpxStep: 8 }, //  ... straight into a sharp left
+  { kind: "run", length: 200, gpxStep: 25 },
+  { kind: "bend", radius: 250, sweep: 40, gpxStep: 10 }, // slight right
+  { kind: "run", length: 300, gpxStep: 60 },
+  { kind: "bend", radius: 30, sweep: 150, gpxStep: 9 }, // very sharp right
+  { kind: "run", length: 80, gpxStep: 25 },
+  { kind: "bend", radius: 70, sweep: -60, gpxStep: 10 }, // S-bend...
+  { kind: "bend", radius: 70, sweep: 60, gpxStep: 10 }, // ...and back
+  { kind: "run", length: 250, gpxStep: 50 },
+  { kind: "bend", radius: 120, sweep: 90, gpxStep: 10 }, // long gentle right
+  { kind: "run", length: 400, gpxStep: 80 },
+];
+
+/** Roughly the Tamhini ghat, west of Pune. */
+const START: GeoPoint = { lat: 18.4521, lon: 73.4123, ele: 620 };
+const START_HEADING = 20;
+
 function straight(from: GeoPoint, heading: number, length: number, step: number): GeoPoint[] {
   const out: GeoPoint[] = [];
   for (let d = step; d <= length + 1e-9; d += step) out.push(destination(from, d, heading));
+  const end = destination(from, length, heading);
+  if (out.length === 0 || out[out.length - 1]!.lat !== end.lat) out.push(end);
   return out;
 }
 
-/** Sprinkle points along a circular arc (positive sweep = right). */
 function arc(
   from: GeoPoint,
   heading: number,
@@ -39,64 +81,99 @@ function arc(
   return out;
 }
 
-export function genSampleCommand(out: string): void {
-  // Roughly the Tamhini ghat, west of Pune.
-  let cursor: GeoPoint = { lat: 18.4521, lon: 73.4123, ele: 620 };
-  let heading = 20;
+/** Walk the road, sampling each piece at `stepFor` metres. */
+function buildRoad(stepFor: (piece: Piece) => number): GeoPoint[] {
+  let cursor: GeoPoint = { ...START };
+  let heading = START_HEADING;
+  let elevation = START.ele ?? 0;
   const points: GeoPoint[] = [{ ...cursor }];
-  let elevation = 620;
 
-  /** Append a piece of road, climbing as it goes. */
-  const push = (piece: GeoPoint[], climbPerPoint: number): void => {
-    for (const p of piece) {
-      elevation += climbPerPoint;
-      points.push({ ...p, ele: Math.round(elevation * 10) / 10 });
+  for (const piece of ROAD) {
+    const step = stepFor(piece);
+    const segment =
+      piece.kind === "run"
+        ? straight(cursor, heading, piece.length, step)
+        : arc(cursor, heading, piece.radius, piece.sweep, step);
+    for (const point of segment) {
+      elevation += piece.kind === "run" ? 0.4 : 0.5;
+      points.push({ ...point, ele: Math.round(elevation * 10) / 10 });
     }
-    const end = piece[piece.length - 1];
+    const end = segment[segment.length - 1];
     if (end) cursor = end;
-  };
+    if (piece.kind === "bend") heading = (heading + piece.sweep + 360) % 360;
+  }
+  return points;
+}
 
-  const run = (length: number, step = 25): void => {
-    push(straight(cursor, heading, length, step), 0.4);
-  };
-  /**
-   * `step` is how far apart the GPX points are: hairpins get sparse points on
-   * purpose, because that is exactly what planner exports look like.
-   */
-  const bend = (radius: number, sweep: number, step = 10): void => {
-    push(arc(cursor, heading, radius, sweep, step), 0.5);
-    heading = (heading + sweep + 360) % 360;
-  };
+/** Split a polyline into OSM-style ways that share their junction nodes. */
+function asOverpassJson(road: GeoPoint[], wayCount: number): string {
+  const per = Math.ceil(road.length / wayCount);
+  const elements = [];
+  for (let i = 0; i < wayCount; i++) {
+    const from = i * per;
+    const to = Math.min(road.length, from + per + 1); // overlap one node = a junction
+    if (to - from < 2) break;
+    elements.push({
+      type: "way",
+      id: 100_000 + i,
+      tags: {
+        highway: "secondary",
+        name: "Tamhini Ghat Road",
+        surface: "asphalt",
+      },
+      geometry: road.slice(from, to).map((p) => ({
+        lat: Number(p.lat.toFixed(7)),
+        lon: Number(p.lon.toFixed(7)),
+      })),
+    });
+  }
+  return JSON.stringify({ version: 0.6, generator: "rally gen-sample", elements }, null, 1);
+}
 
-  run(400, 50);            // approach along the river
-  bend(60, 70);            // medium right onto the climb
-  run(150);
-  bend(45, -80);           // sharp left
-  run(60);
-  bend(16, 170, 18);       // hairpin right - only 3 points, like real map data
-  run(120);
-  bend(18, -165, 20);      // hairpin left, equally sparse
-  run(90);
-  bend(110, 50);           // gentle right sweeper
-  bend(35, -75, 8);        // straight into a sharp left: an "into" pair
-  run(200);
-  bend(250, 40);           // slight right
-  run(300, 60);
-  bend(30, 150, 9);        // very sharp right, almost a hairpin
-  run(80);
-  bend(70, -60);           // medium left
-  bend(70, 60);            // ... and back: an S-bend
-  run(250, 50);
-  bend(120, 90);           // long gentle right around the shoulder
-  run(400, 80);            // run to the top
+/**
+ * Deterministic hand-drawn wobble: a planner line is traced over a basemap by
+ * eye, so it sits a few metres off the real centreline and wanders.
+ */
+function wobble(points: GeoPoint[], sigma: number, seed = 17): GeoPoint[] {
+  let a = seed >>> 0;
+  const rand = (): number => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  // A slowly turning offset direction, so the error drifts rather than jitters:
+  // that is what a traced line actually looks like.
+  let bearingDeg = rand() * 360;
+  let magnitude = rand() * sigma;
+  return points.map((p) => {
+    bearingDeg = (bearingDeg + (rand() - 0.5) * 120 + 360) % 360;
+    magnitude = Math.max(0, Math.min(sigma, magnitude + (rand() - 0.5) * sigma));
+    const moved = destination(p, magnitude, bearingDeg);
+    return p.ele !== undefined ? { ...moved, ele: p.ele } : moved;
+  });
+}
 
-  // Give the track plausible timestamps at ~35 km/h so it replays nicely.
+export function genSampleCommand(out: string, values: Record<string, unknown>): void {
+  const sigma = values["wobble"] === undefined ? 0 : Number(values["wobble"]);
+  const plannerRoad =
+    sigma > 0 ? wobble(buildRoad((piece) => piece.gpxStep), sigma) : buildRoad((piece) => piece.gpxStep);
+
+  // Plausible timestamps at ~35 km/h, so the file also works as a replay source.
   let t = Date.UTC(2024, 10, 17, 2, 30, 0);
-  const timed = points.map((p, i) => {
+  const timed = plannerRoad.map((p, i) => {
     if (i > 0) t += 1000;
     return { ...p, time: t };
   });
-
   writeFileSync(out, toGpx(timed, "Sample ghat climb"));
   console.log(dim(`Wrote ${out} (${timed.length} points)`));
+
+  if (typeof values["osm-out"] === "string") {
+    // The same road as OSM would have it: surveyed every 4 m.
+    const surveyed = buildRoad(() => 4);
+    writeFileSync(values["osm-out"], asOverpassJson(surveyed, 5));
+    console.log(
+      dim(`Wrote ${values["osm-out"]} (${surveyed.length} nodes across 5 ways)`),
+    );
+  }
 }

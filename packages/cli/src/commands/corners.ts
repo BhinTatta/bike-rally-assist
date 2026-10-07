@@ -10,20 +10,23 @@ import {
   bold,
   colourGrade,
   configFromFlags,
+  describeSnap,
   dim,
-  loadRoute,
+  loadRouteMaybeOsm,
   metres,
   table,
 } from "../util.js";
 
-export function cornersCommand(
+export async function cornersCommand(
   file: string,
   values: Record<string, unknown>,
-): void {
-  const route = loadRoute(file, configFromFlags(values));
+): Promise<void> {
+  const { route, snap } = await loadRouteMaybeOsm(file, values, configFromFlags(values));
   const stats = routeStats(route);
 
   console.log(bold(`\n${route.name ?? file}`));
+  const snapLine = describeSnap(snap);
+  if (snapLine) console.log(snapLine);
   console.log(
     dim(
       `${(route.length / 1000).toFixed(2)} km, ${route.points.length} samples at ${route.spacing} m spacing`,

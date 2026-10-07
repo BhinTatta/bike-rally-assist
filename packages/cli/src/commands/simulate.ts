@@ -14,10 +14,11 @@ import {
   bold,
   clock,
   configFromFlags,
+  describeSnap,
   dim,
   green,
   kmh,
-  loadRoute,
+  loadRouteMaybeOsm,
   metres,
   red,
   yellow,
@@ -36,8 +37,8 @@ function colourCall(call: Call): string {
 }
 
 /** Replay a recorded ride: real fix times, real noise, real stops. */
-function replay(routeFile: string, rideFile: string, values: Record<string, unknown>) {
-  const route = loadRoute(routeFile, configFromFlags(values));
+async function replay(routeFile: string, rideFile: string, values: Record<string, unknown>) {
+  const { route, snap } = await loadRouteMaybeOsm(routeFile, values, configFromFlags(values));
   const parsed = parseGpx(readFileSync(rideFile, "utf8"));
   const points = parsed.points.filter((p) => p.time !== undefined);
   if (points.length < 2) {
@@ -50,13 +51,13 @@ function replay(routeFile: string, rideFile: string, values: Record<string, unkn
     const fix: GpsFix = { lat: p.lat, lon: p.lon, time: p.time! };
     calls.push(...codriver.update(fix));
   }
-  return { route, calls, start, fixes: points.length };
+  return { route, calls, start, fixes: points.length, snap };
 }
 
-export function simulateCommand(
+export async function simulateCommand(
   file: string,
   values: Record<string, unknown>,
-): void {
+): Promise<void> {
   const overrides = configFromFlags(values);
   const rideFile = typeof values["replay"] === "string" ? values["replay"] : undefined;
 
@@ -64,13 +65,14 @@ export function simulateCommand(
   let start: number;
   let header: string;
   let route;
+  let snap;
 
   if (rideFile) {
-    const result = replay(file, rideFile, values);
-    ({ route, calls, start } = result);
+    const result = await replay(file, rideFile, values);
+    ({ route, calls, start, snap } = result);
     header = `replaying ${rideFile} (${result.fixes} fixes)`;
   } else {
-    route = loadRoute(file, overrides);
+    ({ route, snap } = await loadRouteMaybeOsm(file, values, overrides));
     const speedKmh = Number(values["speed"] ?? 40);
     const noise = Number(values["noise"] ?? 0);
     const rate = Number(values["rate"] ?? 1);
@@ -95,6 +97,8 @@ export function simulateCommand(
   }
 
   console.log(bold(`\n${route.name ?? file}`));
+  const snapLine = describeSnap(snap);
+  if (snapLine) console.log(snapLine);
   console.log(
     dim(
       `${(route.length / 1000).toFixed(2)} km, ${route.corners.length} corners - ${header}`,

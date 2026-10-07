@@ -16,7 +16,7 @@ about to do.
 | Phase | Scope | State |
 | --- | --- | --- |
 | **1** | Engine (GPX → corners, runtime co-driver) + CLI + tests | **done** |
-| 2 | OSM road snapping at import time | not started |
+| **2** | OSM road snapping at import time | **done** |
 | 3 | React Native / Expo app (Android first) | not started |
 | 4 | Polish, permissions, docs | not started |
 
@@ -25,16 +25,30 @@ about to do.
 ```
 packages/engine   pure TypeScript: GPX parsing, corner detection, the co-driver.
                   Zero Node/browser/React Native APIs - runs anywhere.
-packages/cli      Node developer tools built on the engine.
-fixtures          sample-ghat.gpx, a synthetic Western Ghats climb.
+packages/osm      optional layer: fetch OSM roads, map-match the GPX onto them.
+                  Platform-agnostic (fetch and storage are injected).
+packages/cli      Node developer tools built on both.
+fixtures          the synthetic Western Ghats climb, in three forms.
 ```
+
+### The fixtures
+
+One road, three representations, so every layer can be tested honestly:
+
+| File | What it is |
+| --- | --- |
+| `sample-ghat.gpx` | a clean planner export: correct geometry, but sparse (hairpins are 3 points) |
+| `sample-ghat-planner.gpx` | the same road traced by hand: sparse **and** 0-8 m off the centreline |
+| `sample-ghat-osm.json` | what OSM has: surveyed every 4 m, split into 5 joined ways |
+
+Regenerate them with `pnpm rally gen-sample`.
 
 ## Setup
 
 ```bash
 pnpm install
-pnpm build          # builds engine, then cli
-pnpm test           # 58 engine tests
+pnpm build          # builds engine, then osm, then cli
+pnpm test           # 58 engine tests + 31 OSM tests
 pnpm typecheck
 ```
 
@@ -107,17 +121,78 @@ A standalone Leaflet page: route in grey, corners coloured by grade
 its radius, heading change, length and modifiers. It pulls Leaflet and OSM tiles
 from their public CDNs, so the first open needs internet.
 
+## Verifying Phase 2
+
+A planner's hand-traced line wobbles, and the engine can only describe the line
+it is given - so it reads a wobble as a corner. Snapping to OSM first fixes
+that at the source.
+
+```bash
+# the hand-traced line, as-is
+pnpm rally corners fixtures/sample-ghat-planner.gpx
+#   corners 17 (5.7 per km)   <- six of them are the tracing error
+
+# the same file, snapped onto the surveyed OSM road
+pnpm rally corners fixtures/sample-ghat-planner.gpx --osm-file fixtures/sample-ghat-osm.json
+#   Snapped to 5 OSM way(s), mean offset 2.0 m via Tamhini Ghat Road
+#   corners 11 (3.7 per km)   <- identical to the clean route, hairpins and all
+```
+
+`--osm-file` replays a saved Overpass response. For the real thing, which
+fetches from Overpass and caches to `./.rally-cache`:
+
+```bash
+pnpm rally osm-fetch fixtures/sample-ghat.gpx --out roads.json  # warm the cache
+pnpm rally corners   fixtures/sample-ghat-planner.gpx --osm        # fetch or use cache
+pnpm rally corners   fixtures/sample-ghat-planner.gpx --osm --offline  # cache only
+pnpm rally osm-fetch fixtures/sample-ghat.gpx --print-query      # see the Overpass QL
+```
+
+`--osm` works on `corners`, `simulate` and `debug-map`.
+
+### How it works
+
+1. **Corridor.** The route is split into 5 km chunks and each gets a bounding
+   box padded by 150 m - so a 100 km ride does not ask Overpass for every road
+   in the district.
+2. **Fetch.** One union query for all the boxes, `out geom` so node coordinates
+   come inline. Endpoints are tried in order with a backoff; 429 and 504 from a
+   free, shared service are normal.
+3. **Match.** A Hidden Markov matcher in the style of Newson & Krumm: states are
+   candidate projections of each 15 m sample onto nearby roads, emission cost is
+   how far the sample sits from that road, transition cost is how badly
+   "distance travelled along the road" disagrees with "distance travelled by the
+   GPX", plus penalties for hopping between ways that do not touch and for
+   riding a way against the GPX's direction. Viterbi picks the cheapest path.
+4. **Stitch.** The output is the *OSM geometry itself*, sliced between matched
+   positions - every surveyed node of the hairpin, not the sparse input snapped
+   sideways.
+5. **Judge.** Mean offset, matched fraction and length ratio decide whether to
+   accept. A bad match falls back to the raw GPX and says why; nothing is ever
+   worse than Phase 1.
+6. **Cache.** The fetched network is cached by corridor, so a route imported at
+   home works on a ghat with no signal. The store is injected - a directory for
+   the CLI, AsyncStorage for the app.
+
+The engine never learns about any of this: `@rally/osm` hands it points.
+
 ### 4. Tests
 
 ```bash
 pnpm test
 ```
 
-Covers: straight lines, arcs of 20/50/100/200 m (radius recovered within 20%),
+Engine - straight lines, arcs of 20/50/100/200 m (radius recovered within 20%),
 a 180° hairpin, an S-bend producing "into", a sparse 3-point hairpin, noisy GPS
 (5 seeds, no duplicate and no missed calls), snapping across a hairpin without
 jumping legs, off-route, GPS loss, starting mid-route, and the phrasing of every
 call type.
+
+OSM - recovering a surveyed road from a rough traced line (mean error under
+1 m), ignoring a parallel decoy road, a hairpin whose legs are both on one way,
+corridor chunking, Overpass query building and parsing, retry and endpoint
+failover, caching (fetch once, then offline), corrupt cache entries, and four
+ways a match can be rejected in favour of the raw GPX.
 
 ## How a corner is found
 

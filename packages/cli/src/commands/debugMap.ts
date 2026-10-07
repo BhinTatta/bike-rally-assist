@@ -10,7 +10,7 @@
 import { writeFileSync } from "node:fs";
 import { routeStats } from "@rally/engine";
 import type { AnalysedRoute } from "@rally/engine";
-import { configFromFlags, dim, loadRoute } from "../util.js";
+import { configFromFlags, describeSnap, dim, loadRouteMaybeOsm } from "../util.js";
 
 /** Grade -> line colour. Hot colours for the corners that will hurt. */
 const GRADE_COLOURS: Record<string, string> = {
@@ -142,11 +142,13 @@ function renderHtml(route: AnalysedRoute, title: string): string {
 `;
 }
 
-export function debugMapCommand(
+export async function debugMapCommand(
   file: string,
   values: Record<string, unknown>,
-): void {
-  const route = loadRoute(file, configFromFlags(values));
+): Promise<void> {
+  const { route, snap } = await loadRouteMaybeOsm(file, values, configFromFlags(values));
+  const snapLine = describeSnap(snap);
+  if (snapLine) console.log(snapLine);
   const out = typeof values["out"] === "string" ? values["out"] : "debug-map.html";
   writeFileSync(out, renderHtml(route, route.name ?? file));
   console.log(

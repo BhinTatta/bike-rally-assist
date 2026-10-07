@@ -92,3 +92,31 @@ radius is *not* a hairpin by default — it is called "sharp".
    `pnpm rally corners route.gpx` and move the `thresholds`.
 4. Re-run with flags (`--lead`, `--lag`, `--smooth`, `--span`) until the list
    reads the way you want, then write the values into `DEFAULT_CONFIG`.
+
+---
+
+# Tuning the OSM layer
+
+`packages/osm/src/config.ts`, same idea.
+
+| Value | Default | What it does |
+| --- | --- | --- |
+| `corridorMeters` | 150 m | How far either side of the GPX to look for roads. Wide enough for a badly traced line, narrow enough not to drag in the road down in the valley. Raise to 250 m for really rough imports; above ~400 m the matcher starts getting tempted by parallel roads. |
+| `corridorChunkMeters` | 5 km | Route is split into chunks, one bounding box each. Smaller = more precise corridor, longer query. |
+| `highwayTypes` | 15 values | Which `highway=*` tags count as road. Drop `track` if you keep matching onto farm tracks. |
+| `cacheMaxAgeMs` | 6 months | How long a cached corridor stays usable offline. |
+| `sampleSpacingMeters` | 15 m | Matching resolution. Smaller = more states = slower (cost is roughly linear in samples × candidates²). |
+| `searchRadiusMeters` | 35 m | How far from a sample to look for candidate roads. Must exceed the tracing error of your GPX files; too large and the decoy road next door becomes a candidate. |
+| `maxCandidates` | 6 | Candidate roads per sample. |
+| `gpsSigmaMeters` | 12 m | How far a GPX point is *expected* to sit from the real road. Raise it for rougher sources, which makes the matcher care more about continuity and less about proximity. |
+| `transitionBetaMeters` | 12 m | Tolerance on "distance travelled along the road should match distance travelled by the GPX". Lower = stricter continuity. |
+| `wayChangePenalty` | 1.5 | Cost of hopping to another way mid-step. Stops the matcher flapping between two ways that overlap at a junction. |
+| `disconnectedPenalty` | 6 | Extra cost when the two ways share no node. This is what keeps the route on the road network instead of teleporting to a parallel road. |
+| `headingPenalty` | 4 | Cost of travelling a way against the GPX's direction. Without it, a matcher happily rides a hairpin backwards. |
+| `minMatchedFraction` | 0.8 | Reject the match if less than this fraction of samples found any road. The usual reason a real ghat route is rejected: OSM simply has not mapped the upper half. |
+| `maxMeanOffsetMeters` | 20 m | Reject if the matched road averages further than this from the GPX. |
+| `minLengthRatio` / `maxLengthRatio` | 0.85 / 1.2 | Reject if the matched road is much shorter or longer than the GPX - the signature of a matcher that cut a corner or went round the houses. |
+
+Rejection is not failure: it means "the raw GPX is the better of the two", and
+the import carries on with Phase 1 behaviour. `pnpm rally corners <gpx> --osm`
+prints the reason.

@@ -80,6 +80,20 @@ const config: ExpoConfig = {
           "Rally Co-Driver calls corners while the phone is locked in your pocket, so it needs location in the background.",
       },
     ],
+    // Required, not optional. expo-audio ships no service in its own library
+    // manifest: `AudioControlsService` (and FOREGROUND_SERVICE_MEDIA_PLAYBACK)
+    // exist only if this plugin runs. Without it, the first play() with
+    // background playback enabled tries to start a service Android cannot
+    // find and the app dies natively, with no JavaScript error to show for it.
+    [
+      "expo-audio",
+      {
+        // The keep-alive stream is playback only - never ask for the mic.
+        microphonePermission: false,
+        recordAudioAndroid: false,
+        enableBackgroundPlayback: true,
+      },
+    ],
     "@maplibre/maplibre-react-native",
     [
       "expo-build-properties",

@@ -76,6 +76,8 @@ export interface ImportOptions {
   useOsm: boolean;
   engineConfig?: DeepPartial<EngineConfig>;
   onProgress?: (message: string) => void;
+  /** Lets the rider skip the road-data step without losing the import. */
+  signal?: AbortSignal;
 }
 
 export interface ImportResult {
@@ -107,7 +109,8 @@ export async function importGpx(
     options.onProgress?.("Looking for OSM road data…");
     const snap = await snapRouteToOsm(parsed.points, {
       store: new AsyncStorageStore(),
-      onProgress: options.onProgress,
+      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     if (snap.usedOsm) {
       geometry = snap.geometry;

@@ -64,7 +64,7 @@ describe("corridor boxes", () => {
 describe("query building", () => {
   it("asks only for rideable highways, with geometry", () => {
     const query = buildQuery(corridorBoxes(trueGhatRoad(), config), config);
-    expect(query).toContain("[out:json][timeout:90]");
+    expect(query).toContain("[out:json][timeout:60]");
     expect(query).toContain('way["highway"~"^(motorway|trunk|primary');
     expect(query.trimEnd().endsWith("out geom;")).toBe(true);
   });
@@ -211,6 +211,124 @@ describe("fetching", () => {
       queries.map((_, i) => 501 + i),
     );
     expect(network.boxes.length).toBeGreaterThan(6);
+  });
+
+  it("stops after the first batch when the phone has no connection", async () => {
+    // The failure that actually happened: five batches, two endpoints and a
+    // retry each is twenty pointless requests when DNS does not resolve.
+    const long = Array.from({ length: 200 }, (_, i) =>
+      destination({ lat: 18.45, lon: 73.41 }, i * 300, 45),
+    );
+    let attempts = 0;
+    const fetchImpl: FetchLike = async () => {
+      attempts++;
+      throw new Error("fetch failed: java.net.UnknownHostException: Unable to resolve host");
+    };
+    await expect(fetchRoadNetwork(long, { fetch: fetchImpl })).rejects.toThrow(
+      /no internet connection/,
+    );
+    // One try per endpoint - the second is worth a single lookup, because an
+    // ISP blocking one Overpass domain is not the same as having no data -
+    // and then it stops. Not five batches of two endpoints with a retry each.
+    expect(attempts).toBe(2);
+  });
+
+  it("keeps the batches that worked when one fails", async () => {
+    const long = Array.from({ length: 200 }, (_, i) =>
+      destination({ lat: 18.45, lon: 73.41 }, i * 300, 45),
+    );
+    let call = 0;
+    const fetchImpl: FetchLike = async () => {
+      call++;
+      if (call === 1) return { ok: false, status: 504, text: async () => "gateway timeout" };
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            elements: [
+              {
+                type: "way",
+                id: 900 + call,
+                tags: { highway: "primary" },
+                geometry: [
+                  { lat: 18.45, lon: 73.41 },
+                  { lat: 18.46, lon: 73.42 },
+                ],
+              },
+            ],
+          }),
+      };
+    };
+    const network = await fetchRoadNetwork(long, {
+      fetch: fetchImpl,
+      config: { retries: 0, retryBackoffMs: 1 },
+    });
+    expect(network.ways.length).toBeGreaterThan(0);
+  });
+
+  it("gives up once the overall budget is spent", async () => {
+    const long = Array.from({ length: 400 }, (_, i) =>
+      destination({ lat: 18.45, lon: 73.41 }, i * 300, 45),
+    );
+    let calls = 0;
+    const fetchImpl: FetchLike = async () => {
+      calls++;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            elements: [
+              {
+                type: "way",
+                id: 1000 + calls,
+                tags: { highway: "primary" },
+                geometry: [
+                  { lat: 18.45, lon: 73.41 },
+                  { lat: 18.46, lon: 73.42 },
+                ],
+              },
+            ],
+          }),
+      };
+    };
+    const network = await fetchRoadNetwork(long, {
+      fetch: fetchImpl,
+      config: { totalBudgetMs: 120 },
+    });
+    // It stopped early and kept what it had rather than running to the end.
+    expect(calls).toBeLessThan(10);
+    expect(network.ways.length).toBeGreaterThan(0);
+  });
+
+  it("can be cancelled by the rider", async () => {
+    const long = Array.from({ length: 200 }, (_, i) =>
+      destination({ lat: 18.45, lon: 73.41 }, i * 300, 45),
+    );
+    const controller = new AbortController();
+    const fetchImpl: FetchLike = async () => {
+      controller.abort(); // the rider taps "Skip road data" mid-request
+      return { ok: true, status: 200, text: async () => JSON.stringify({ elements: [] }) };
+    };
+    await expect(
+      fetchRoadNetwork(long, { fetch: fetchImpl, signal: controller.signal }),
+    ).rejects.toThrow(/cancelled/);
+  });
+
+  it("falls back to the raw GPX when the rider cancels", async () => {
+    const controller = new AbortController();
+    const fetchImpl: FetchLike = async () => {
+      controller.abort();
+      return { ok: true, status: 200, text: async () => JSON.stringify({ elements: [] }) };
+    };
+    const result = await snapRouteToOsm(roughPlannerGpx(trueGhatRoad()), {
+      fetch: fetchImpl,
+      signal: controller.signal,
+    });
+    expect(result.usedOsm).toBe(false);
+    expect(result.quality.reason).toMatch(/skipped at your request/);
   });
 
   it("deduplicates ways that two batches both return", async () => {

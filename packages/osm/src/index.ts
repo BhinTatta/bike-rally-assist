@@ -32,6 +32,8 @@ export interface SnapOptions {
   /** Skip the network entirely and use whatever is cached (offline mode). */
   cacheOnly?: boolean;
   onProgress?: (message: string) => void;
+  /** Lets the rider give up on road data without abandoning the import. */
+  signal?: AbortSignal;
 }
 
 export interface SnapResult extends MatchResult {
@@ -69,10 +71,14 @@ export async function snapRouteToOsm(
         config,
         ...(options.fetch ? { fetch: options.fetch } : {}),
         ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       await writeCachedNetwork(store, key, network);
     } catch (error) {
-      const message = (error as Error).message;
+      const message =
+        (error as Error).name === "CancelledError"
+          ? "skipped at your request"
+          : (error as Error).message;
       options.onProgress?.(`OSM snapping skipped: ${message}`);
       return { ...rawFallback(rawPoints, message), fromCache: false, error: message };
     }

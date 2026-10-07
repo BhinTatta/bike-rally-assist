@@ -35,6 +35,9 @@ export function RoutesScreen({ navigation }: Props) {
   const [routes, setRoutes] = useState<RouteSummary[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
+  // Road data is a bonus, never a blocker: the rider can always walk away from
+  // it and keep the import.
+  const [importAbort, setImportAbort] = useState<AbortController | null>(null);
 
   const refresh = useCallback(async () => {
     setRoutes(await listRoutes());
@@ -50,6 +53,8 @@ export function RoutesScreen({ navigation }: Props) {
     async (uri: string, name: string) => {
       setBusy(true);
       setProgress("Reading file…");
+      const abort = new AbortController();
+      setImportAbort(abort);
       try {
         const xml = await new File(uri).text();
         const settings = await loadSettings();
@@ -57,6 +62,7 @@ export function RoutesScreen({ navigation }: Props) {
           useOsm: settings.useOsmSnapping,
           engineConfig: toEngineConfig(settings),
           onProgress: setProgress,
+          signal: abort.signal,
         });
         await refresh();
         if (result.osmNote) {
@@ -71,6 +77,7 @@ export function RoutesScreen({ navigation }: Props) {
       } finally {
         setBusy(false);
         setProgress(null);
+        setImportAbort(null);
       }
     },
     [navigation, refresh],
@@ -130,7 +137,18 @@ export function RoutesScreen({ navigation }: Props) {
           <Button label="Rides" onPress={() => navigation.navigate("RideLogs")} />
           <Button label="Settings" onPress={() => navigation.navigate("Settings")} />
         </Row>
-        {progress ? <Subtitle>{progress}</Subtitle> : null}
+        {progress ? (
+          <Card>
+            <Subtitle>{progress}</Subtitle>
+            {importAbort ? (
+              <Button
+                label="Skip road data"
+                kind="ghost"
+                onPress={() => importAbort.abort()}
+              />
+            ) : null}
+          </Card>
+        ) : null}
 
         {routes.length === 0 && !busy ? (
           <Empty

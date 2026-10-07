@@ -117,13 +117,20 @@ const sleep = (ms: number): Promise<void> =>
  * "fetch failed: java.net.UnknownHostException: Unable to resolve host" is a
  * true and completely useless thing to show someone on a hillside.
  */
+/**
+ * Is this the phone having no connection at all, as opposed to one server
+ * being slow? There is no point grinding through five batches and two
+ * endpoints when the name does not even resolve.
+ */
+export function isNetworkDown(error: Error): boolean {
+  return /UnknownHost|ENOTFOUND|EAI_AGAIN|Unable to resolve host|Network request failed|ECONNREFUSED|ENETUNREACH|fetch failed/i.test(
+    error.message,
+  );
+}
+
 export function describeFetchError(error: Error): string {
   const message = error.message;
-  if (
-    /UnknownHost|ENOTFOUND|EAI_AGAIN|Unable to resolve host|Network request failed|ECONNREFUSED|ENETUNREACH|fetch failed/i.test(
-      message,
-    )
-  ) {
+  if (isNetworkDown(error)) {
     return "no internet connection";
   }
   if (/abort|ETIMEDOUT|timeout/i.test(message)) {
@@ -139,6 +146,34 @@ export interface FetchOptions {
   config?: Partial<OsmConfig>;
   /** Called with progress messages, e.g. for a "Fetching roads..." UI. */
   onProgress?: (message: string) => void;
+  /** Lets the UI give up on road data without abandoning the import. */
+  signal?: AbortSignal;
+}
+
+/** Thrown when the caller cancelled; callers treat it as "use the raw GPX". */
+export class CancelledError extends Error {
+  constructor() {
+    super("cancelled");
+    this.name = "CancelledError";
+  }
+}
+
+/**
+ * A road-data failure carrying *why* alongside the rider-facing wording.
+ *
+ * The wording has to be human ("no internet connection"), but the caller still
+ * needs the machine fact ("the network is down, so do not try four more
+ * batches"). Keeping both on the error means neither has to be recovered by
+ * pattern-matching a sentence that was written for a person.
+ */
+export class RoadDataError extends Error {
+  constructor(
+    message: string,
+    readonly offline: boolean,
+  ) {
+    super(message);
+    this.name = "RoadDataError";
+  }
 }
 
 /**
@@ -165,12 +200,41 @@ export async function fetchRoadNetwork(
     batches.push(boxes.slice(i, i + config.maxBoxesPerRequest));
   }
 
+  const deadline = Date.now() + config.totalBudgetMs;
   const ways = new Map<number, OsmWay>();
+  let lastError: Error | undefined;
+
   for (let b = 0; b < batches.length; b++) {
+    if (options.signal?.aborted) throw new CancelledError();
+    if (Date.now() > deadline) {
+      options.onProgress?.("Road data is taking too long - using what arrived");
+      break;
+    }
     const batch = batches[b]!;
     const label = batches.length > 1 ? ` (part ${b + 1} of ${batches.length})` : "";
-    const network = await fetchOneBatch(doFetch, batch, config, label, options.onProgress);
-    for (const way of network.ways) ways.set(way.id, way);
+    try {
+      const network = await fetchOneBatch(
+        doFetch,
+        batch,
+        config,
+        label,
+        deadline,
+        options.onProgress,
+        options.signal,
+      );
+      for (const way of network.ways) ways.set(way.id, way);
+    } catch (error) {
+      if (error instanceof CancelledError) throw error;
+      lastError = error as Error;
+      // No connection is a fact about the phone, not about this batch: the
+      // remaining four will fail in exactly the same way.
+      if (lastError instanceof RoadDataError && lastError.offline) break;
+    }
+  }
+
+  if (options.signal?.aborted) throw new CancelledError();
+  if (ways.size === 0) {
+    throw lastError ?? new Error("no road data was returned");
   }
   options.onProgress?.(`Got ${ways.size} ways`);
   return { ways: [...ways.values()], boxes, fetchedAt: Date.now() };
@@ -182,22 +246,31 @@ async function fetchOneBatch(
   boxes: BoundingBox[],
   config: OsmConfig,
   label: string,
+  deadline: number,
   onProgress?: (message: string) => void,
+  signal?: AbortSignal,
 ): Promise<RoadNetwork> {
   const query = buildQuery(boxes, config);
 
   let lastError: Error | undefined;
   for (const endpoint of config.endpoints) {
     for (let attempt = 0; attempt <= config.retries; attempt++) {
+      if (signal?.aborted) throw new CancelledError();
+      if (Date.now() > deadline) break;
       try {
         onProgress?.(
           `Fetching roads from ${hostOf(endpoint)}${label}`,
         );
         const controller =
           typeof AbortController !== "undefined" ? new AbortController() : undefined;
+        // Never wait past the overall budget, even if this request's own
+        // timeout is longer than the time left.
+        const allowance = Math.max(1000, Math.min(config.requestTimeoutMs, deadline - Date.now()));
         const timer = controller
-          ? setTimeout(() => controller.abort(), config.requestTimeoutMs)
+          ? setTimeout(() => controller.abort(), allowance)
           : undefined;
+        const onAbort = (): void => controller?.abort();
+        signal?.addEventListener("abort", onAbort);
         let response;
         try {
           response = await doFetch(endpoint, {
@@ -208,21 +281,29 @@ async function fetchOneBatch(
           });
         } finally {
           if (timer !== undefined) clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
         }
         if (!response.ok) {
           throw new Error(`Overpass returned HTTP ${response.status}`);
         }
-        return parseOverpass(await response.text(), boxes);
+        const body = await response.text();
+        if (signal?.aborted) throw new CancelledError();
+        return parseOverpass(body, boxes);
       } catch (error) {
+        if (signal?.aborted) throw new CancelledError();
         lastError = error as Error;
+        // A dead network will not come back inside a retry loop.
+        if (isNetworkDown(lastError)) break;
         if (attempt < config.retries) {
           await sleep(config.retryBackoffMs * Math.pow(2, attempt));
         }
       }
     }
   }
-  throw new Error(
+  if (signal?.aborted) throw new CancelledError();
+  throw new RoadDataError(
     lastError ? describeFetchError(lastError) : "the road data request failed",
+    lastError !== undefined && isNetworkDown(lastError),
   );
 }
 

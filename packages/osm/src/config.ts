@@ -8,8 +8,16 @@ export interface OsmConfig {
   endpoints: string[];
   /** Overpass `timeout:` value, seconds. */
   queryTimeoutSeconds: number;
-  /** Abort a request that takes longer than this, milliseconds. */
+  /** Abort a single request that takes longer than this, milliseconds. */
   requestTimeoutMs: number;
+  /**
+   * Give up on road data entirely after this long, milliseconds.
+   *
+   * Without a ceiling, a long route times out per batch, per endpoint, per
+   * retry, and an import can sit there for the better part of an hour. The
+   * raw GPX is always a usable answer, so there is no reason to wait.
+   */
+  totalBudgetMs: number;
   /** Retries per endpoint before moving to the next one. */
   retries: number;
   /** Base delay for the retry backoff, milliseconds. */
@@ -68,10 +76,11 @@ export const DEFAULT_OSM_CONFIG: OsmConfig = {
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
   ],
-  queryTimeoutSeconds: 90,
-  requestTimeoutMs: 120_000,
-  retries: 2,
-  retryBackoffMs: 1500,
+  queryTimeoutSeconds: 60,
+  requestTimeoutMs: 25_000,
+  totalBudgetMs: 90_000,
+  retries: 1,
+  retryBackoffMs: 1000,
   corridorMeters: 150,
   corridorChunkMeters: 5000,
   maxBoxesPerRequest: 6,

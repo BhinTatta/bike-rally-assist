@@ -37,7 +37,9 @@ const STEP_NAMES: Record<string, string> = {
   "ride:survived-2s": "running, 2 seconds in",
   "ride:survived-6s": "running, 6 seconds in",
   "task:batch": "handling a GPS update",
+  "location:foreground-fallback": "falling back to foreground location",
   "selftest:audio": "self-test: audio",
+  "selftest:location-foreground": "self-test: foreground location",
   "selftest:location": "self-test: location service",
   "selftest:done": "self-test finished",
 };

@@ -2,7 +2,8 @@
 export type RootStackParamList = {
   Routes: undefined;
   RoutePreview: { routeId: string };
-  Ride: { routeId: string };
+  /** `mode` says whether the ride survives the screen locking. */
+  Ride: { routeId: string; mode?: "background" | "foreground" };
   Settings: undefined;
   RideLogs: undefined;
 };

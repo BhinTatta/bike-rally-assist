@@ -18,7 +18,7 @@ import type { Corner } from "@rally/engine";
 import { Button } from "../ui/components";
 import { colors, gradeColor, spacing } from "../ui/theme";
 import { rideEngine, type RideSnapshot } from "../ride/rideEngine";
-import { stopLocationUpdates } from "../ride/locationTask";
+import { stopRideLocation } from "../ride/locationTask";
 import {
   breadcrumb,
   clearBreadcrumb,
@@ -33,7 +33,8 @@ type Props = NativeStackScreenProps<RootStackParamList, "Ride">;
 /** Big arrow glyphs, picked for weight rather than prettiness. */
 const ARROW = { left: "←", right: "→", ahead: "↑" } as const;
 
-export function RideScreen({ navigation }: Props) {
+export function RideScreen({ navigation, route: navRoute }: Props) {
+  const mode = navRoute.params?.mode ?? "background";
   useKeepAwake();
   const [snapshot, setSnapshot] = useState<RideSnapshot>(rideEngine.getSnapshot());
 
@@ -77,7 +78,7 @@ export function RideScreen({ navigation }: Props) {
         style: "destructive",
         onPress: () => {
           void (async () => {
-            await stopLocationUpdates();
+            await stopRideLocation();
             await rideEngine.end();
             navigation.navigate("Routes");
           })();
@@ -144,6 +145,12 @@ export function RideScreen({ navigation }: Props) {
         </View>
       ) : null}
 
+      {mode === "foreground" ? (
+        <View style={[styles.banner, styles.bannerWarn]}>
+          <Text style={styles.bannerWarnText}>KEEP THIS SCREEN ON — calls stop if the phone locks</Text>
+        </View>
+      ) : null}
+
       <View style={styles.footer}>
         <View style={styles.readouts}>
           <Readout label="km/h" value={String(speedKmh)} />
@@ -185,6 +192,8 @@ const styles = StyleSheet.create({
   modifiers: { color: colors.textDim, fontSize: 20, textTransform: "uppercase", letterSpacing: 2 },
   banner: { backgroundColor: colors.bad, paddingVertical: spacing.sm, alignItems: "center" },
   bannerBad: { backgroundColor: colors.bad },
+  bannerWarn: { backgroundColor: colors.warn, paddingVertical: spacing.xs },
+  bannerWarnText: { color: "#10131a", fontSize: 13, fontWeight: "800", textAlign: "center" },
   bannerText: { color: "#fff", fontSize: 24, fontWeight: "900", letterSpacing: 3 },
   footer: { padding: spacing.md, gap: spacing.sm },
   readouts: { flexDirection: "row", justifyContent: "space-between" },

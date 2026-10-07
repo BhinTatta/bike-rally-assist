@@ -8,7 +8,7 @@
  * confused "Deny".
  */
 
-import { Platform } from "react-native";
+import { PermissionsAndroid, Platform } from "react-native";
 import * as Location from "expo-location";
 import * as IntentLauncher from "expo-intent-launcher";
 import Constants from "expo-constants";
@@ -50,6 +50,27 @@ export async function requestBackground(): Promise<boolean> {
   }
   const { granted } = await Location.requestBackgroundPermissionsAsync();
   return granted;
+}
+
+/**
+ * Ask for notification permission.
+ *
+ * Android 13+ will not show a notification without it - including the ride's
+ * own foreground-service notification, which is the rider's only sign that the
+ * app is still running with the screen off. The service itself works either
+ * way, so a refusal is never fatal.
+ */
+export async function requestNotifications(): Promise<boolean> {
+  if (Platform.OS !== "android" || typeof Platform.Version !== "number") return true;
+  if (Platform.Version < 33) return true;
+  try {
+    const result = await PermissionsAndroid.request(
+      "android.permission.POST_NOTIFICATIONS" as Parameters<typeof PermissionsAndroid.request>[0],
+    );
+    return result === PermissionsAndroid.RESULTS.GRANTED;
+  } catch {
+    return false;
+  }
 }
 
 /**

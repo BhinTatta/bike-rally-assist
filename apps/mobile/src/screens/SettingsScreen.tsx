@@ -30,7 +30,12 @@ import {
   type Verbosity,
 } from "../storage/settings";
 import { rideEngine } from "../ride/rideEngine";
-import { openBatteryOptimisationSettings } from "../ride/permissions";
+import {
+  checkPermissions,
+  openBatteryOptimisationSettings,
+  requestBackground,
+  type PermissionState,
+} from "../ride/permissions";
 import { clearLastCrash, readLastCrash, type CrashRecord } from "../diagnostics";
 import { runSelfTest } from "../ride/selfTest";
 
@@ -39,9 +44,11 @@ export function SettingsScreen() {
   const [crash, setCrash] = useState<CrashRecord | null>(null);
   const [testing, setTesting] = useState(false);
   const [testProgress, setTestProgress] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<PermissionState | null>(null);
 
   useEffect(() => {
     void loadSettings().then(setSettings);
+    void checkPermissions().then(setPermissions);
     setCrash(readLastCrash());
   }, []);
 
@@ -211,6 +218,28 @@ export function SettingsScreen() {
       </Card>
 
       <SectionHeader>Android</SectionHeader>
+      <Card>
+        <Title>Location permission</Title>
+        <Subtitle>
+          {permissions === null
+            ? "Checking…"
+            : permissions.background
+              ? 'Set to "Allow all the time". Rides keep calling corners with the phone locked in a pocket or on a mount.'
+              : 'Set to "While using the app". Rides still work, but only with the screen on and the app in front — Android stops location the moment the phone locks.'}
+        </Subtitle>
+        {permissions !== null && !permissions.background ? (
+          <Button
+            label="Allow all the time"
+            style={styles.spaced}
+            onPress={() => {
+              void requestBackground().then(() =>
+                checkPermissions().then(setPermissions),
+              );
+            }}
+          />
+        ) : null}
+      </Card>
+
       <Card>
         <Title>Self-test</Title>
         <Subtitle>

@@ -16,10 +16,15 @@ import { Body, Button, Card, GradeBadge, Row, SectionHeader, Stat, Subtitle, Tit
 import { RouteMap } from "../ui/RouteMap";
 import { colors, spacing } from "../ui/theme";
 import { listRoutes, loadRoute, type RouteSummary } from "../storage/routes";
-import { checkPermissions, requestBackground, requestForeground } from "../ride/permissions";
+import {
+  checkPermissions,
+  requestBackground,
+  requestForeground,
+  requestNotifications,
+} from "../ride/permissions";
 import { breadcrumb } from "../diagnostics";
 import { rideEngine } from "../ride/rideEngine";
-import { startLocationUpdates } from "../ride/locationTask";
+import { startRideLocation } from "../ride/locationTask";
 import type { RootStackParamList } from "../navigation";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RoutePreview">;
@@ -65,16 +70,21 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
         );
         return;
       }
+      // Worth asking even though a refusal is survivable: without it the ride
+      // notification never appears, and that notification is the only sign the
+      // app is still running with the screen off.
+      await requestNotifications();
+
       if (!state.background) {
         const granted = await requestBackground();
         if (!granted) {
           const proceed = await new Promise<boolean>((resolve) => {
             Alert.alert(
-              "Calls will stop when the screen locks",
-              'Android needs "Allow all the time" to keep calling corners with the phone in your pocket. You can still ride with the screen on.',
+              "Screen must stay on",
+              'Android only lets the app keep calling corners with the phone locked if you choose "Allow all the time" in its location settings.\n\nYou can ride now with the screen on and the app in front — the calls work exactly the same — but they stop the moment the phone locks.',
               [
                 { text: "Go back", style: "cancel", onPress: () => resolve(false) },
-                { text: "Ride anyway", onPress: () => resolve(true) },
+                { text: "Ride with screen on", onPress: () => resolve(true) },
               ],
             );
           });
@@ -95,9 +105,9 @@ export function RoutePreviewScreen({ navigation, route: navRoute }: Props) {
         return;
       }
       breadcrumb("start:location-service");
-      await startLocationUpdates(route?.name ?? "your route");
+      const mode = await startRideLocation(route?.name ?? "your route");
       breadcrumb("start:navigate");
-      navigation.navigate("Ride", { routeId });
+      navigation.navigate("Ride", { routeId, mode });
     } catch (error) {
       Alert.alert("Could not start the ride", (error as Error).message);
     } finally {

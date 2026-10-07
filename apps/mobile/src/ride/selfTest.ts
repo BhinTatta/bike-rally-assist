@@ -16,7 +16,7 @@
 import { breadcrumb, clearBreadcrumb, heartbeat } from "../diagnostics";
 import { loadSettings } from "../storage/settings";
 import { CallQueue, TtsVoice } from "./speech";
-import { startLocationUpdates, stopLocationUpdates } from "./locationTask";
+import { startLocationUpdates, startForegroundWatch, stopRideLocation } from "./locationTask";
 
 export interface SelfTestResult {
   audioOk: boolean;
@@ -57,9 +57,22 @@ export async function runSelfTest(
     breadcrumb("selftest:location");
     await startLocationUpdates("Self-test");
     locationOk = true;
-    notes.push("Location foreground service started.");
+    notes.push("Background location service started — rides survive the screen locking.");
   } catch (error) {
-    notes.push(`Location service failed: ${(error as Error).message}`);
+    const message = (error as Error).message;
+    notes.push(`Background location service unavailable: ${message}`);
+    // The interesting half: does the foreground fallback work on this phone?
+    try {
+      onProgress("Falling back to foreground location…");
+      breadcrumb("selftest:location-foreground");
+      await startForegroundWatch();
+      locationOk = true;
+      notes.push(
+        'Foreground location works. Rides run with the screen on. For the phone-in-pocket mode, grant "Allow all the time" in Android location settings.',
+      );
+    } catch (fallbackError) {
+      notes.push(`Foreground location also failed: ${(fallbackError as Error).message}`);
+    }
   }
 
   // Android kills a process whose foreground service has not settled within
@@ -73,7 +86,7 @@ export async function runSelfTest(
 
   onProgress("Shutting down…");
   breadcrumb("selftest:done");
-  await stopLocationUpdates().catch(() => undefined);
+  await stopRideLocation().catch(() => undefined);
   await queue?.stop().catch(() => undefined);
   clearBreadcrumb();
 

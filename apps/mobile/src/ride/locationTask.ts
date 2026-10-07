@@ -87,3 +87,64 @@ export async function isRideServiceRunning(): Promise<boolean> {
     return false;
   }
 }
+
+// --------------------------------------------------------- foreground mode
+
+/**
+ * The fallback for a rider who granted "While using the app" but not
+ * "Allow all the time".
+ *
+ * `startLocationUpdatesAsync` flatly rejects without the background grant - so
+ * offering to "ride anyway" and then calling it was a promise the app could
+ * not keep. A plain position watch needs no background permission and no
+ * foreground service. It works perfectly with the screen on and the app in
+ * front, which is a real way to ride; it just stops when the phone locks.
+ */
+let foregroundWatch: Location.LocationSubscription | null = null;
+
+export async function startForegroundWatch(): Promise<void> {
+  await stopForegroundWatch();
+  foregroundWatch = await Location.watchPositionAsync(
+    {
+      accuracy: Location.Accuracy.BestForNavigation,
+      timeInterval: 1000,
+      distanceInterval: 0,
+    },
+    (location) => {
+      void rideEngine.handleLocations([location]);
+    },
+  );
+}
+
+export async function stopForegroundWatch(): Promise<void> {
+  try {
+    foregroundWatch?.remove();
+  } catch {
+    // Already gone.
+  }
+  foregroundWatch = null;
+}
+
+export type RideLocationMode = "background" | "foreground";
+
+/**
+ * Start location updates the best way this phone will allow, and say which
+ * way that turned out to be.
+ */
+export async function startRideLocation(routeName: string): Promise<RideLocationMode> {
+  try {
+    await startLocationUpdates(routeName);
+    return "background";
+  } catch {
+    // Expected when only the foreground grant exists; also covers an OEM that
+    // refuses the service for its own reasons. Either way, keep riding.
+    breadcrumb("location:foreground-fallback");
+    await startForegroundWatch();
+    return "foreground";
+  }
+}
+
+export async function stopRideLocation(): Promise<void> {
+  await stopForegroundWatch();
+  await stopLocationUpdates();
+}

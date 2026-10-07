@@ -24,7 +24,7 @@ import { RideLogsScreen } from "./src/screens/RideLogsScreen";
 import { ErrorBoundary } from "./src/ui/ErrorBoundary";
 import type { RootStackParamList } from "./src/navigation";
 import { loadSettings, saveSettings } from "./src/storage/settings";
-import { isRideServiceRunning, stopLocationUpdates } from "./src/ride/locationTask";
+import { isRideServiceRunning, stopRideLocation } from "./src/ride/locationTask";
 import { rideEngine } from "./src/ride/rideEngine";
 import {
   clearLastCrash,
@@ -96,7 +96,7 @@ export default function App() {
           routeName: died.routeName,
         });
         markRideScreenHealthy();
-        await stopLocationUpdates();
+        await stopRideLocation();
         await rideEngine.end().catch(() => undefined);
       } else {
         setResumeRide(riding);
@@ -115,7 +115,7 @@ export default function App() {
 
   /** A render error anywhere: stop the ride so the phone is not left running one. */
   const handleRenderError = useCallback(() => {
-    void stopLocationUpdates();
+    void stopRideLocation();
     void rideEngine.end().catch(() => undefined);
   }, []);
 

@@ -90,49 +90,130 @@ function radiusAhead(route: AnalysedRoute, dist: number, ahead: number): number 
 }
 
 /**
- * Ride the route and collect every call the co-driver makes.
+ * A speed for every point of the route, for a rider who cruises at `cruise`,
+ * slows for corners, and can only brake and accelerate so hard.
+ *
+ * One backwards pass makes sure every corner is reachable under braking, one
+ * forwards pass limits how quickly speed comes back afterwards. The result is
+ * what a real ride looks like on a graph, which is what a preview should feel
+ * like.
  */
-export function simulateRide(
+export function speedProfile(
   route: AnalysedRoute,
-  options: SimulationOptions = {},
-  configOverride?: DeepPartial<EngineConfig>,
-): SimulationResult {
-  const {
-    speedKmh = 40,
-    rateHz = 1,
-    noiseMeters = 0,
-    startTime = Date.UTC(2024, 0, 1, 6, 0, 0),
-    seed = 1,
-    lateralG = 0,
-  } = options;
+  cruise: number,
+  lateralG: number,
+  accel = 2.2,
+  decel = 3.5,
+): number[] {
+  const pts = route.points;
+  const n = pts.length;
+  const profile = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    const k = Math.abs(pts[i]!.curvature);
+    const limit = k > 0 && lateralG > 0 ? Math.sqrt((lateralG * 9.81) / k) : Infinity;
+    profile[i] = Math.max(2, Math.min(cruise, limit));
+  }
+  for (let i = n - 2; i >= 0; i--) {
+    const step = pts[i + 1]!.dist - pts[i]!.dist;
+    const reachable = Math.sqrt(profile[i + 1]! ** 2 + 2 * decel * step);
+    if (profile[i]! > reachable) profile[i] = reachable;
+  }
+  for (let i = 1; i < n; i++) {
+    const step = pts[i]!.dist - pts[i - 1]!.dist;
+    const reachable = Math.sqrt(profile[i - 1]! ** 2 + 2 * accel * step);
+    if (profile[i]! > reachable) profile[i] = reachable;
+  }
+  return profile;
+}
 
-  const rand = mulberry32(seed);
-  const codriver = new CoDriver(route, configOverride);
-  const dt = 1 / rateHz;
-  const cruise = speedKmh / 3.6;
+export interface SimulatorOptions extends SimulationOptions {
+  /** Where on the route to start, metres. */
+  startDist?: number;
+  /**
+   * Brake and accelerate like a rider instead of changing speed instantly.
+   * Used by the in-app preview; the tests keep the simpler instant model.
+   */
+  smooth?: boolean;
+}
 
-  const fixes: GpsFix[] = [];
-  const calls: Call[] = [];
-  let dist = 0;
-  let t = 0;
+/**
+ * A ride you can step through: ask for the next fix whenever you want one.
+ *
+ * `simulateRide` runs one of these to the end in a loop; the app's preview
+ * steps it on a timer and feeds the fixes to the real ride engine, so what you
+ * hear at your desk is exactly what you would hear on the road.
+ */
+export class RideSimulator {
+  private readonly rand: () => number;
+  private readonly cruise: number;
+  private readonly lateralG: number;
+  private readonly noiseMeters: number;
+  private readonly profile: number[] | null;
+  private dist: number;
+  private t = 0;
+  private readonly startTime: number;
 
-  while (dist <= route.length) {
+  constructor(
+    private readonly route: AnalysedRoute,
+    options: SimulatorOptions = {},
+  ) {
+    this.rand = mulberry32(options.seed ?? 1);
+    this.cruise = (options.speedKmh ?? 40) / 3.6;
+    this.lateralG = options.lateralG ?? 0;
+    this.noiseMeters = options.noiseMeters ?? 0;
+    this.startTime = options.startTime ?? Date.UTC(2024, 0, 1, 6, 0, 0);
+    this.dist = Math.max(0, options.startDist ?? 0);
+    this.profile = options.smooth
+      ? speedProfile(route, this.cruise, this.lateralG > 0 ? this.lateralG : 0.35)
+      : null;
+  }
+
+  /** Metres along the route. */
+  get position(): number {
+    return this.dist;
+  }
+
+  get finished(): boolean {
+    return this.dist > this.route.length;
+  }
+
+  /** Jump to a distance along the route (the preview's scrubber). */
+  seek(dist: number): void {
+    this.dist = Math.max(0, Math.min(this.route.length, dist));
+  }
+
+  private speedHere(): number {
+    if (this.profile) {
+      const index = Math.max(
+        0,
+        Math.min(this.profile.length - 1, Math.round(this.dist / this.route.spacing)),
+      );
+      return this.profile[index]!;
+    }
     // Brake for what is coming, like a human: look a few seconds up the road.
-    const radius = radiusAhead(route, dist, Math.max(25, cruise * 3));
+    const radius = radiusAhead(this.route, this.dist, Math.max(25, this.cruise * 3));
     const limit =
-      lateralG > 0 && Number.isFinite(radius)
-        ? Math.sqrt(lateralG * 9.81 * radius)
+      this.lateralG > 0 && Number.isFinite(radius)
+        ? Math.sqrt(this.lateralG * 9.81 * radius)
         : Infinity;
-    const speed = Math.max(2, Math.min(cruise, limit));
+    return Math.max(2, Math.min(this.cruise, limit));
+  }
 
-    const truth = pointAtDistance(route, dist);
-    const ahead = pointAtDistance(route, Math.min(route.length, dist + 1));
+  /**
+   * The fix for the current position, then advance `dt` seconds.
+   * Returns null once the end of the route has been passed.
+   */
+  step(dt: number): GpsFix | null {
+    if (this.finished) return null;
+    const speed = this.speedHere();
+    const truth = pointAtDistance(this.route, this.dist);
+    const ahead = pointAtDistance(this.route, Math.min(this.route.length, this.dist + 1));
     let observed = truth;
-    if (noiseMeters > 0) {
+    if (this.noiseMeters > 0) {
       observed = destination(
         truth,
-        Math.abs(gaussian(rand)) * noiseMeters,
-        rand() * 360,
+        Math.abs(gaussian(this.rand)) * this.noiseMeters,
+        this.rand() * 360,
       );
     }
     const fix: GpsFix = {
@@ -140,15 +221,39 @@ export function simulateRide(
       lon: observed.lon,
       speed,
       heading: haversine(truth, ahead) > 0 ? bearing(truth, ahead) : 0,
-      accuracy: noiseMeters > 0 ? Math.max(3, noiseMeters) : 3,
-      time: startTime + Math.round(t * 1000),
+      accuracy: this.noiseMeters > 0 ? Math.max(3, this.noiseMeters) : 3,
+      time: this.startTime + Math.round(this.t * 1000),
     };
-    fixes.push(fix);
-    calls.push(...codriver.update(fix));
-
-    dist += speed * dt;
-    t += dt;
+    this.dist += speed * dt;
+    this.t += dt;
+    return fix;
   }
 
-  return { fixes, calls, durationSeconds: t };
+  /** Seconds of simulated time elapsed. */
+  get elapsed(): number {
+    return this.t;
+  }
+}
+
+/**
+ * Ride the route and collect every call the co-driver makes.
+ */
+export function simulateRide(
+  route: AnalysedRoute,
+  options: SimulationOptions = {},
+  configOverride?: DeepPartial<EngineConfig>,
+): SimulationResult {
+  const simulator = new RideSimulator(route, options);
+  const codriver = new CoDriver(route, configOverride);
+  const dt = 1 / (options.rateHz ?? 1);
+
+  const fixes: GpsFix[] = [];
+  const calls: Call[] = [];
+  for (;;) {
+    const fix = simulator.step(dt);
+    if (!fix) break;
+    fixes.push(fix);
+    calls.push(...codriver.update(fix));
+  }
+  return { fixes, calls, durationSeconds: simulator.elapsed };
 }

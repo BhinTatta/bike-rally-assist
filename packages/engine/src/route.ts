@@ -9,6 +9,7 @@
 import { resolveConfig, type DeepPartial, type EngineConfig } from "./config.js";
 import { computeCurvature } from "./curvature.js";
 import { detectCorners } from "./corners.js";
+import { annotateRoute } from "./features.js";
 import { parseGpx } from "./gpx.js";
 import { dedupe, resample } from "./resample.js";
 import { smooth } from "./smooth.js";
@@ -43,6 +44,7 @@ export function analyseRoute(
     spacing: geometry.resampleMeters,
   };
   if (name !== undefined) route.name = name;
+  annotateRoute(route, config.features);
   return route;
 }
 

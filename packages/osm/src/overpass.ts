@@ -10,7 +10,7 @@
 import { cumulativeDistances, haversine, EARTH_RADIUS_M } from "@rally/engine";
 import type { GeoPoint } from "@rally/engine";
 import { resolveOsmConfig, type OsmConfig } from "./config.js";
-import type { BoundingBox, FetchLike, OsmWay, RoadNetwork } from "./types.js";
+import type { BoundingBox, FetchLike, OsmNode, OsmWay, RoadNetwork } from "./types.js";
 
 const toRad = (deg: number): number => (deg * Math.PI) / 180;
 
@@ -70,10 +70,19 @@ const fixed = (n: number): string => n.toFixed(6);
 export function buildQuery(boxes: BoundingBox[], config: OsmConfig): string {
   const filter = `["highway"~"^(${config.highwayTypes.join("|")})$"]`;
   const clauses = boxes
-    .map(
-      (b) =>
-        `  way${filter}(${fixed(b.south)},${fixed(b.west)},${fixed(b.north)},${fixed(b.east)});`,
-    )
+    .map((b) => {
+      const box = `(${fixed(b.south)},${fixed(b.west)},${fixed(b.north)},${fixed(b.east)})`;
+      const lines = [`  way${filter}${box};`];
+      // Point hazards. Cheap to ask for: there are a handful per box at most.
+      if (config.fetchHazardNodes) {
+        lines.push(
+          `  node["traffic_calming"]${box};`,
+          `  node["railway"="level_crossing"]${box};`,
+          `  node["ford"]${box};`,
+        );
+      }
+      return lines.join("\n");
+    })
     .join("\n");
   // `out geom` gives each way's node coordinates inline, so no second request
   // is needed to resolve node ids into positions.
@@ -85,14 +94,32 @@ interface OverpassElement {
   id: number;
   tags?: Record<string, string>;
   geometry?: { lat: number; lon: number }[];
+  lat?: number;
+  lon?: number;
 }
 
 /** Parse an Overpass JSON response into a road network. */
 export function parseOverpass(json: string, boxes: BoundingBox[]): RoadNetwork {
   const parsed = JSON.parse(json) as { elements?: OverpassElement[] };
   const ways: OsmWay[] = [];
+  const nodes: OsmNode[] = [];
   const seen = new Set<number>();
+  const seenNodes = new Set<number>();
   for (const element of parsed.elements ?? []) {
+    if (element.type === "node") {
+      if (
+        element.tags &&
+        typeof element.lat === "number" &&
+        typeof element.lon === "number" &&
+        Number.isFinite(element.lat) &&
+        Number.isFinite(element.lon) &&
+        !seenNodes.has(element.id)
+      ) {
+        seenNodes.add(element.id);
+        nodes.push({ id: element.id, lat: element.lat, lon: element.lon, tags: element.tags });
+      }
+      continue;
+    }
     if (element.type !== "way" || !element.geometry || seen.has(element.id)) continue;
     const geometry = element.geometry
       .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lon))
@@ -105,7 +132,7 @@ export function parseOverpass(json: string, boxes: BoundingBox[]): RoadNetwork {
     seen.add(element.id);
     ways.push({ id: element.id, geometry, tags: element.tags ?? {} });
   }
-  return { ways, boxes, fetchedAt: Date.now() };
+  return { ways, nodes, boxes, fetchedAt: Date.now() };
 }
 
 const sleep = (ms: number): Promise<void> =>
@@ -202,6 +229,7 @@ export async function fetchRoadNetwork(
 
   const deadline = Date.now() + config.totalBudgetMs;
   const ways = new Map<number, OsmWay>();
+  const nodes = new Map<number, OsmNode>();
   let lastError: Error | undefined;
 
   for (let b = 0; b < batches.length; b++) {
@@ -223,6 +251,7 @@ export async function fetchRoadNetwork(
         options.signal,
       );
       for (const way of network.ways) ways.set(way.id, way);
+      for (const node of network.nodes ?? []) nodes.set(node.id, node);
     } catch (error) {
       if (error instanceof CancelledError) throw error;
       lastError = error as Error;
@@ -237,7 +266,12 @@ export async function fetchRoadNetwork(
     throw lastError ?? new Error("no road data was returned");
   }
   options.onProgress?.(`Got ${ways.size} ways`);
-  return { ways: [...ways.values()], boxes, fetchedAt: Date.now() };
+  return {
+    ways: [...ways.values()],
+    nodes: [...nodes.values()],
+    boxes,
+    fetchedAt: Date.now(),
+  };
 }
 
 /** One Overpass request, with retries and endpoint failover. */
@@ -318,6 +352,7 @@ export function cacheKey(boxes: BoundingBox[], config: OsmConfig): string {
   const payload = JSON.stringify([
     boxes.map((b) => [fixed(b.south), fixed(b.west), fixed(b.north), fixed(b.east)]),
     config.highwayTypes,
+    config.fetchHazardNodes,
   ]);
   // FNV-1a: tiny, dependency-free, and collisions do not matter here because a
   // wrong hit would only mean refetching.

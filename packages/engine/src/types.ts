@@ -76,6 +76,63 @@ export interface Corner {
   /** Rally-style number: 1 = tightest, 6 = barely a corner. */
   rallyNumber: number;
   modifiers: CornerModifier[];
+  /**
+   * Clear road before the corner entry, metres: the gap back to the previous
+   * corner's exit (or to the route start). A long approach into a tight corner
+   * is the classic way to arrive too fast.
+   */
+  approachMeters?: number;
+  /** Mean road gradient through the corner, percent. Negative is downhill. */
+  gradientPercent?: number;
+  /**
+   * Worth a "caution": a tight corner after a fast approach, or a tight
+   * corner on a steep descent.
+   */
+  caution?: boolean;
+}
+
+/** Things about the road ahead that are not corners. */
+export type RoadFeatureKind =
+  | "crest"
+  | "dip"
+  | "steep-descent"
+  | "steep-climb"
+  | "surface"
+  | "bridge"
+  | "tunnel"
+  | "narrow"
+  | "bump"
+  | "rail-crossing"
+  | "town";
+
+export interface RoadFeature {
+  /** Stable index within the route, in route order. */
+  id: number;
+  kind: RoadFeatureKind;
+  /** Where it starts, metres along the route. */
+  dist: number;
+  /** Where it ends, for features with length (a descent, a gravel stretch). */
+  endDist?: number;
+  /** Extra detail for display and speech: "gravel", "speed breaker". */
+  label?: string;
+  /** Mean gradient for the elevation features, percent. */
+  gradientPercent?: number;
+  /** Where the fact came from. */
+  source: "elevation" | "osm";
+}
+
+/** What a stretch of road is like to ride. */
+export type SectionKind = "straight" | "flowing" | "twisty" | "technical";
+
+export interface RouteSection {
+  id: number;
+  kind: SectionKind;
+  startDist: number;
+  endDist: number;
+  cornerCount: number;
+  hairpinCount: number;
+  /** Total heading change per kilometre, degrees. */
+  turnPerKm: number;
 }
 
 /** A route that has been resampled, smoothed and analysed. */
@@ -89,6 +146,13 @@ export interface AnalysedRoute {
   length: number;
   /** Spacing actually used between points, metres. */
   spacing: number;
+  /** Crests, descents, surface changes, speed breakers... in route order. */
+  features?: RoadFeature[];
+  /** The route cut into stretches of similar character. */
+  sections?: RouteSection[];
+  /** Total climb and descent, metres, when the source had elevation. */
+  ascent?: number;
+  descent?: number;
 }
 
 /** One GPS fix handed to the runtime co-driver. */
@@ -114,7 +178,10 @@ export type CallKind =
   | "gps-restored"
   | "route-start"
   | "route-end"
-  | "reversed";
+  | "reversed"
+  | "feature"
+  | "section"
+  | "straight";
 
 /**
  * A single utterance. `text` is for TTS; `tokens` is the same thing split into
@@ -136,6 +203,14 @@ export interface Call {
   riderDist?: number;
   /** Rider's speed when the call fired, m/s. */
   speed?: number;
+  /** The call opened with "caution". */
+  caution?: boolean;
+  /** The rider was well over the estimated corner speed when this fired. */
+  overspeed?: boolean;
+  /** Estimated comfortable corner speed for the first corner, m/s. */
+  advisorySpeed?: number;
+  /** The feature this call is about, for "feature" calls. */
+  featureId?: number;
 }
 
 /** Where the rider currently is, relative to the route. */

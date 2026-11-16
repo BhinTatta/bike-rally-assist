@@ -8,7 +8,7 @@
  * input. If we cannot, we fall back to the raw GPX and nothing is lost.
  */
 
-import type { GeoPoint } from "@rally/engine";
+import type { GeoPoint, NewFeature } from "@rally/engine";
 
 /** One OSM way, as returned by an Overpass `out geom` query. */
 export interface OsmWay {
@@ -18,9 +18,19 @@ export interface OsmWay {
   tags: Record<string, string>;
 }
 
+/** A tagged point: a speed breaker, a railway crossing, a ford. */
+export interface OsmNode {
+  id: number;
+  lat: number;
+  lon: number;
+  tags: Record<string, string>;
+}
+
 /** The roads found along a route's corridor. */
 export interface RoadNetwork {
   ways: OsmWay[];
+  /** Hazard nodes in the same corridor. Absent in data fetched before v2. */
+  nodes?: OsmNode[];
   /** The bounding boxes that were queried, for cache keys and debugging. */
   boxes: BoundingBox[];
   /** When this was fetched (epoch ms), so a cache entry can be aged out. */
@@ -62,6 +72,13 @@ export interface MatchResult {
   wayIds: number[];
   /** Road names encountered, in order, for display ("Tamhini Ghat Road"). */
   roadNames: string[];
+  /**
+   * Hazards read from the map along the matched road: surface changes,
+   * bridges, tunnels, speed breakers. Distances are along `geometry`.
+   */
+  features?: NewFeature[];
+  /** Length of `geometry`, metres - what the feature distances are measured on. */
+  geometryLength?: number;
 }
 
 /** Anything that can store strings by key: a file, AsyncStorage, a Map. */

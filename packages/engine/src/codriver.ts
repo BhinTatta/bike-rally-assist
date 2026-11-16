@@ -14,14 +14,40 @@ import {
   type EngineConfig,
 } from "./config.js";
 import { haversine, pointToSegment } from "./geo.js";
-import { buildCornerCall, buildStatusCall } from "./phrase.js";
+import {
+  buildCornerCall,
+  buildFeatureCall,
+  buildSectionCall,
+  buildStatusCall,
+  buildStraightCall,
+} from "./phrase.js";
+import { brakingDistance, cornerSpeed, leanAngle } from "./modes.js";
 import type {
   AnalysedRoute,
   Call,
   Corner,
   GpsFix,
+  RoadFeature,
+  RouteSection,
   SnapResult,
 } from "./types.js";
+
+/** A corner still ahead (or under the wheels), as the rider will meet it. */
+export interface UpcomingCorner {
+  /** Mirrored when riding the route backwards. */
+  corner: Corner;
+  /** Metres to the corner entry; zero or less once the rider is inside it. */
+  distance: number;
+  /** Estimated comfortable speed through it, m/s. */
+  advisorySpeed: number;
+}
+
+/** A road feature still ahead, as the rider will meet it. */
+export interface UpcomingFeature {
+  feature: RoadFeature;
+  /** Metres to where it starts; zero or less once the rider is on it. */
+  distance: number;
+}
 
 export interface CoDriverState {
   /** Distance along the route, metres; null before the first usable fix. */
@@ -47,6 +73,22 @@ export interface CoDriverState {
   /** Corners announced so far. */
   calledCornerIds: number[];
   finished: boolean;
+  /**
+   * The next few corners ahead by position alone, nearest first - what a ride
+   * display should draw. Unlike `nextCorner` a corner stays here after it has
+   * been called, right up until the rider leaves it.
+   */
+  upcoming: UpcomingCorner[];
+  /** The nearest road feature ahead, if any is within a couple of kilometres. */
+  nextFeature: UpcomingFeature | null;
+  /** The stretch of road the rider is on. */
+  section: RouteSection | null;
+  /** Metres left to ride in the current direction. */
+  remaining: number | null;
+  /** 0-1 along the route in the current direction. */
+  progress: number | null;
+  /** Estimated lean angle right now, degrees, from speed and road curvature. */
+  lean: number;
 }
 
 export class CoDriver {
@@ -73,6 +115,18 @@ export class CoDriver {
   /** Signed metres of consistent travel, used to decide a U-turn happened. */
   private directionEvidence = 0;
   private readonly called = new Set<number>();
+  /** Road features already announced or passed. */
+  private readonly announcedFeatures = new Set<number>();
+  /** The section whose character was last announced (or silently entered). */
+  private sectionId: number | null = null;
+  /** The corner whose exit last had its following straight considered. */
+  private straightAfterCorner: number | null = null;
+  /**
+   * Furthest point up the road whose character has been looked at. Only ever
+   * moves forward, so slowing down cannot make the probe fall back across a
+   * section boundary and announce the same change twice.
+   */
+  private sectionProbe: number | null = null;
 
   constructor(route: AnalysedRoute, configOverride?: DeepPartial<EngineConfig>) {
     this.route = route;
@@ -109,10 +163,18 @@ export class CoDriver {
     this.travelDirection = 1;
     this.directionEvidence = 0;
     this.called.clear();
+    this.announcedFeatures.clear();
+    this.sectionId = null;
+    this.straightAfterCorner = null;
+    this.sectionProbe = null;
   }
 
   getState(): CoDriverState {
     const next = this.findNextCorner();
+    const dist = this.lastDist;
+    const length = this.route.length;
+    const remaining =
+      dist === null ? null : this.travelDirection === 1 ? length - dist : dist;
     return {
       dist: this.lastDist,
       travelDirection: this.travelDirection,
@@ -130,7 +192,24 @@ export class CoDriver {
           : null,
       calledCornerIds: [...this.called],
       finished: this.finished,
+      upcoming: dist === null || !this.onRoute ? [] : this.upcomingCorners(dist, 4),
+      nextFeature: dist === null || !this.onRoute ? null : this.upcomingFeature(dist),
+      section: dist === null ? null : this.sectionAt(dist),
+      remaining,
+      progress:
+        remaining === null || length <= 0
+          ? null
+          : Math.max(0, Math.min(1, 1 - remaining / length)),
+      lean:
+        dist === null || !this.onRoute
+          ? 0
+          : leanAngle(this.speed, this.curvatureAt(dist)),
     };
+  }
+
+  /** Estimated comfortable speed through a corner in the current mode, m/s. */
+  advisorySpeedFor(corner: Corner): number {
+    return cornerSpeed(corner.minRadius, this.config.runtime.lateralG);
   }
 
   /**
@@ -224,7 +303,11 @@ export class CoDriver {
     this.lastFixTime = fix.time;
 
     // 6. Starting mid-route: never announce corners that are already behind.
-    if (isFirstFix) this.silenceCornersBehind(projected);
+    if (isFirstFix) {
+      this.silenceCornersBehind(projected);
+      // The road the rider starts on is not news either.
+      this.sectionId = this.sectionAt(snap.dist)?.id ?? null;
+    }
 
     // 7. Corners we have driven through without calling (too slow, bad fixes,
     //    off-route detour) must not pop out late.
@@ -249,6 +332,16 @@ export class CoDriver {
     // 9. The actual corner call.
     const cornerCall = this.maybeCallCorner(projected, fix.time, snap.dist);
     if (cornerCall) calls.push(cornerCall);
+
+    // 10. Everything that is not a corner: hazards first, then commentary.
+    //     Commentary is skipped when a corner was just called - a rider being
+    //     told about a hairpin does not also need to hear the scenery.
+    const featureCall = this.maybeCallFeature(projected, fix.time, snap.dist);
+    if (featureCall) calls.push(featureCall);
+    const sectionCall = this.maybeCallSection(projected, fix.time, snap.dist, cornerCall !== null);
+    if (sectionCall) calls.push(sectionCall);
+    const straightCall = this.maybeCallStraight(snap.dist, fix.time, cornerCall !== null);
+    if (straightCall) calls.push(straightCall);
     return calls;
   }
 
@@ -383,7 +476,11 @@ export class CoDriver {
     // The whole route is new again from this direction, and every corner is
     // mirrored, so nothing that was called before applies.
     this.called.clear();
+    this.announcedFeatures.clear();
     this.silenceCornersBehind(dist);
+    this.sectionId = this.sectionAt(dist)?.id ?? null;
+    this.sectionProbe = null;
+    this.straightAfterCorner = null;
     this.finished = false;
     return runtime.announceUTurn ? buildStatusCall("reversed", time, dist) : null;
   }
@@ -407,6 +504,11 @@ export class CoDriver {
       const behind = this.travelDirection === 1 ? exit < projected : exit > projected;
       if (behind) this.called.add(corner.id);
     }
+    for (const feature of this.route.features ?? []) {
+      if (this.featureEntry(feature) * this.travelDirection < projected * this.travelDirection) {
+        this.announcedFeatures.add(feature.id);
+      }
+    }
   }
 
   /**
@@ -415,7 +517,7 @@ export class CoDriver {
    */
   private asTravelled(corner: Corner): Corner {
     if (this.travelDirection === 1) return corner;
-    return {
+    const mirrored: Corner = {
       ...corner,
       direction: corner.direction === "left" ? "right" : "left",
       modifiers: corner.modifiers
@@ -424,6 +526,23 @@ export class CoDriver {
         .filter((m) => m !== "into")
         .map((m) => (m === "tightens" ? "opens" : m === "opens" ? "tightens" : m)),
     };
+    // What was a climb is now a descent, and the approach is the gap on the
+    // other side - so the caution flag has to be judged afresh.
+    if (corner.gradientPercent !== undefined) mirrored.gradientPercent = -corner.gradientPercent;
+    const following = this.route.corners[corner.id + 1];
+    mirrored.approachMeters =
+      (following ? following.startDist : this.route.length) - corner.endDist;
+    const features = this.config.features;
+    const tight = corner.rallyNumber <= features.cautionMaxRallyNumber;
+    const steepDown =
+      mirrored.gradientPercent !== undefined &&
+      mirrored.gradientPercent <= -features.cautionDescentPercent;
+    if (tight && (mirrored.approachMeters >= features.cautionApproachMeters || steepDown)) {
+      mirrored.caution = true;
+    } else {
+      delete mirrored.caution;
+    }
+    return mirrored;
   }
 
   /** The corner chained onto `corner` in the current direction, if any. */
@@ -471,10 +590,22 @@ export class CoDriver {
     const distance = (this.entryOf(next) - projected) * this.travelDirection;
     // Warn `leadSeconds` ahead, clamped so the call is neither a surprise at
     // walking pace nor a distant rumour at 90 km/h.
-    const trigger = Math.min(
+    let trigger = Math.min(
       runtime.maxLeadMeters,
       Math.max(runtime.minLeadMeters, this.speed * runtime.leadSeconds),
     );
+    const advisory = this.advisorySpeedFor(next);
+    if (runtime.brakingAwareLead) {
+      // Five seconds is plenty for a sweeper and nowhere near enough for a
+      // hairpin at the end of a straight: call early enough to slow down.
+      const needed = brakingDistance(
+        this.speed,
+        advisory,
+        runtime.brakingG,
+        runtime.reactionSeconds,
+      );
+      trigger = Math.min(runtime.maxLeadMeters * 1.5, Math.max(trigger, needed));
+    }
     if (distance > trigger) return null;
 
     const group = [next];
@@ -489,16 +620,271 @@ export class CoDriver {
     }
     for (const c of group) this.called.add(c.id);
 
+    const travelled = group.map((c) => this.asTravelled(c));
+    // "Too fast" does not mean faster than the corner - everyone is, five
+    // seconds out. It means that even braking harder than usual and reacting
+    // at once, the road left is not enough to get down to the corner's speed.
+    const overspeed =
+      runtime.speedWarnings &&
+      next.rallyNumber <= 4 &&
+      brakingDistance(
+        this.speed,
+        advisory,
+        runtime.brakingG * (1 + runtime.overspeedMargin),
+        runtime.reactionSeconds * 0.5,
+      ) > Math.max(0, distance);
     return buildCornerCall(
       {
-        corners: group.map((c) => this.asTravelled(c)),
+        corners: travelled,
         distance,
         timeToCorner: this.speed > 0 ? distance / this.speed : Infinity,
+        time,
+        riderDist,
+        speed: this.speed,
+        caution: runtime.cautionCalls && travelled[0]!.caution === true,
+        overspeed,
+        advisorySpeed: advisory,
+      },
+      runtime,
+    );
+  }
+
+  // ------------------------------------------------------- beyond the corners
+
+  /** Where a feature begins, in the direction of travel. */
+  private featureEntry(feature: RoadFeature): number {
+    return this.travelDirection === 1 ? feature.dist : (feature.endDist ?? feature.dist);
+  }
+
+  /** How a feature reads in the direction of travel: a climb becomes a descent. */
+  private featureAsTravelled(feature: RoadFeature): RoadFeature {
+    if (this.travelDirection === 1) return feature;
+    const flipped: RoadFeature = { ...feature };
+    if (feature.kind === "steep-climb") flipped.kind = "steep-descent";
+    else if (feature.kind === "steep-descent") flipped.kind = "steep-climb";
+    if (feature.gradientPercent !== undefined) {
+      flipped.gradientPercent = -feature.gradientPercent;
+    }
+    return flipped;
+  }
+
+  private maybeCallFeature(projected: number, time: number, riderDist: number): Call | null {
+    const features = this.route.features;
+    if (!features || features.length === 0) return null;
+    const { runtime } = this.config;
+    const direction = this.travelDirection;
+    const trigger = Math.min(
+      runtime.maxLeadMeters,
+      Math.max(60, this.speed * runtime.leadSeconds),
+    );
+
+    let due: RoadFeature | null = null;
+    let dueDistance = Infinity;
+    for (const feature of features) {
+      if (this.announcedFeatures.has(feature.id)) continue;
+      const distance = (this.featureEntry(feature) - projected) * direction;
+      if (distance < 0) {
+        // Ridden past without saying it (stopped, off route): never say it late.
+        this.announcedFeatures.add(feature.id);
+        continue;
+      }
+      if (distance <= trigger && distance < dueDistance) {
+        due = feature;
+        dueDistance = distance;
+      }
+    }
+    if (!due) return null;
+    this.announcedFeatures.add(due.id);
+    if (!runtime.announceFeatures || this.speed < runtime.minSpeedForCalls) return null;
+    return buildFeatureCall(
+      {
+        feature: this.featureAsTravelled(due),
+        distance: dueDistance,
         time,
         riderDist,
         speed: this.speed,
       },
       runtime,
     );
+  }
+
+  private sectionAt(dist: number): RouteSection | null {
+    const sections = this.route.sections;
+    if (!sections || sections.length === 0) return null;
+    for (const section of sections) {
+      if (dist >= section.startDist && dist < section.endDist) return section;
+    }
+    return sections[sections.length - 1] ?? null;
+  }
+
+  /**
+   * Say what kind of road is coming when it changes.
+   *
+   * Only changes worth hearing: arriving at something twisty, or the road
+   * opening up after it. A flowing stretch between two straights is not news.
+   */
+  private maybeCallSection(
+    projected: number,
+    time: number,
+    riderDist: number,
+    cornerJustCalled: boolean,
+  ): Call | null {
+    const { runtime } = this.config;
+    // Look a little further up the road than the corner calls do, so "twisty
+    // section" arrives before its first corner rather than on top of it.
+    const lookahead = Math.max(80, this.speed * (runtime.leadSeconds + 3));
+    let probe = Math.max(
+      0,
+      Math.min(this.route.length, projected + lookahead * this.travelDirection),
+    );
+    if (this.sectionProbe !== null) {
+      probe =
+        this.travelDirection === 1
+          ? Math.max(probe, this.sectionProbe)
+          : Math.min(probe, this.sectionProbe);
+    }
+    this.sectionProbe = probe;
+    const section = this.sectionAt(probe);
+    if (!section || section.id === this.sectionId) return null;
+
+    const previous =
+      this.sectionId === null
+        ? null
+        : (this.route.sections?.find((s) => s.id === this.sectionId) ?? null);
+    this.sectionId = section.id;
+    if (!runtime.announceSections || cornerJustCalled) return null;
+    if (this.speed < runtime.minSpeedForCalls) return null;
+
+    const length = section.endDist - section.startDist;
+    const wasBusy = previous?.kind === "twisty" || previous?.kind === "technical";
+    const isBusy = section.kind === "twisty" || section.kind === "technical";
+    const worthSaying = isBusy
+      ? // Arriving at the twisties, or twisty turning properly technical.
+        length >= 500 && (!wasBusy || (section.kind === "technical" && previous?.kind === "twisty"))
+      : section.kind === "straight"
+        ? wasBusy && length >= 1000
+        : previous?.kind === "straight" && length >= 1000;
+    if (!worthSaying) return null;
+    return buildSectionCall(section, time, riderDist);
+  }
+
+  /** After a corner, count out a long clear stretch: "Straight 600". */
+  private maybeCallStraight(dist: number, time: number, cornerJustCalled: boolean): Call | null {
+    const { runtime } = this.config;
+    const corners = this.route.corners;
+    if (corners.length === 0) return null;
+    const direction = this.travelDirection;
+
+    // The corner most recently left behind, and the next one still to come.
+    let exited: Corner | undefined;
+    let ahead: Corner | undefined;
+    if (direction === 1) {
+      for (const corner of corners) {
+        if (corner.endDist <= dist) exited = corner;
+        else if (corner.startDist > dist) {
+          ahead = corner;
+          break;
+        } else return null; // inside a corner
+      }
+    } else {
+      for (let i = corners.length - 1; i >= 0; i--) {
+        const corner = corners[i]!;
+        if (corner.startDist >= dist) exited = corner;
+        else if (corner.endDist < dist) {
+          ahead = corner;
+          break;
+        } else return null;
+      }
+    }
+    if (!exited || exited.id === this.straightAfterCorner) return null;
+    this.straightAfterCorner = exited.id;
+    if (!runtime.callStraights || cornerJustCalled) return null;
+    if (this.speed < runtime.minSpeedForCalls) return null;
+
+    const end = ahead
+      ? direction === 1
+        ? ahead.startDist
+        : ahead.endDist
+      : direction === 1
+        ? this.route.length
+        : 0;
+    const clear = (end - dist) * direction;
+    if (clear < runtime.straightMinMeters) return null;
+    return buildStraightCall(clear, time, dist, runtime);
+  }
+
+  // --------------------------------------------------------- for the display
+
+  private upcomingCorners(dist: number, limit: number): UpcomingCorner[] {
+    const { runtime } = this.config;
+    const corners = this.route.corners;
+    const out: UpcomingCorner[] = [];
+    const worth = (c: Corner): boolean => c.rallyNumber <= runtime.maxRallyNumberToCall;
+    if (this.travelDirection === 1) {
+      // Corners are in route order: binary search for the first not yet left.
+      let lo = 0;
+      let hi = corners.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (corners[mid]!.endDist <= dist) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo; i < corners.length && out.length < limit; i++) {
+        const corner = corners[i]!;
+        if (!worth(corner)) continue;
+        out.push({
+          corner,
+          distance: corner.startDist - dist,
+          advisorySpeed: this.advisorySpeedFor(corner),
+        });
+      }
+    } else {
+      let lo = 0;
+      let hi = corners.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (corners[mid]!.startDist < dist) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo - 1; i >= 0 && out.length < limit; i--) {
+        const corner = corners[i]!;
+        if (!worth(corner)) continue;
+        out.push({
+          corner: this.asTravelled(corner),
+          distance: dist - corner.endDist,
+          advisorySpeed: this.advisorySpeedFor(corner),
+        });
+      }
+    }
+    return out;
+  }
+
+  private upcomingFeature(dist: number): UpcomingFeature | null {
+    const features = this.route.features;
+    if (!features) return null;
+    let best: UpcomingFeature | null = null;
+    for (const feature of features) {
+      const entry = this.featureEntry(feature);
+      const exit =
+        this.travelDirection === 1 ? (feature.endDist ?? feature.dist) : feature.dist;
+      const toEntry = (entry - dist) * this.travelDirection;
+      const toExit = (exit - dist) * this.travelDirection;
+      if (toExit < 0 || toEntry > 2000) continue;
+      if (!best || toEntry < best.distance) {
+        best = { feature: this.featureAsTravelled(feature), distance: toEntry };
+      }
+    }
+    return best;
+  }
+
+  /** Road curvature under the rider, 1/m, unsigned. */
+  private curvatureAt(dist: number): number {
+    const points = this.route.points;
+    if (points.length === 0) return 0;
+    const index = Math.max(
+      0,
+      Math.min(points.length - 1, Math.round(dist / this.route.spacing)),
+    );
+    return Math.abs(points[index]!.curvature);
   }
 }

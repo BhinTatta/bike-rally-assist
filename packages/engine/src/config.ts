@@ -132,6 +132,76 @@ export interface RuntimeConfig {
   announceUTurn: boolean;
   /** Say "route finished" within this distance of the end. Metres. */
   routeEndMeters: number;
+
+  // --- ride-mode behaviour; everything below is off in the bare defaults ---
+
+  /**
+   * Lateral acceleration the rider is assumed comfortable with, in g. Gives
+   * each corner an estimated speed: sqrt(lateralG * 9.81 * radius). It is an
+   * estimate from map geometry, never a promise about grip.
+   */
+  lateralG: number;
+  /** Deceleration assumed available when braking for a corner, in g. */
+  brakingG: number;
+  /** Time before the rider starts braking after hearing a call. Seconds. */
+  reactionSeconds: number;
+  /**
+   * Call early enough to brake: the trigger distance becomes whichever is
+   * longer, the lead time or the distance needed to get down to the corner's
+   * estimated speed.
+   */
+  brakingAwareLead: boolean;
+  /** Prefix the call when the rider is arriving too fast to slow comfortably. */
+  speedWarnings: boolean;
+  /**
+   * How much harder than `brakingG` the rider would have to brake before the
+   * warning fires, as a fraction: 0.5 means "even braking half as hard again,
+   * there is not enough road left to slow for this corner".
+   */
+  overspeedMargin: number;
+  /** The word used for that warning. */
+  overspeedWord: "slow" | "brake";
+  /** Say "caution" before corners flagged as catching riders out. */
+  cautionCalls: boolean;
+  /** Announce crests, descents, surface changes, speed breakers and the like. */
+  announceFeatures: boolean;
+  /** Announce the character of the road when it changes ("twisty section"). */
+  announceSections: boolean;
+  /** Announce a long clear stretch after a run of corners. */
+  callStraights: boolean;
+  /** Only stretches at least this long are worth mentioning. Metres. */
+  straightMinMeters: number;
+}
+
+export interface FeatureConfig {
+  /** Elevation is averaged over this much road before gradients are taken. Metres. */
+  elevationSmoothMeters: number;
+  /** Gradient is measured across this span. Metres. */
+  gradientSpanMeters: number;
+  /** Steeper than this (percent, as a positive number) is a steep descent. */
+  steepDescentPercent: number;
+  /** Steeper than this is a steep climb. */
+  steepClimbPercent: number;
+  /** A steep stretch shorter than this is ignored. Metres. */
+  steepMinMeters: number;
+  /** Gradient either side of a crest or dip must exceed this. Percent. */
+  crestGradientPercent: number;
+  /** Crests and dips closer together than this are merged. Metres. */
+  crestMinSpacingMeters: number;
+  /** A corner this tight or tighter (rally number) can earn a "caution". */
+  cautionMaxRallyNumber: number;
+  /** ...when the clear approach before it is at least this long. Metres. */
+  cautionApproachMeters: number;
+  /** ...or when it sits on a descent at least this steep. Percent. */
+  cautionDescentPercent: number;
+  /** Window used to judge what a stretch of road is like. Metres. */
+  sectionWindowMeters: number;
+  /** Sections shorter than this are folded into a neighbour. Metres. */
+  sectionMinMeters: number;
+  /** Heading change per km above which a stretch is flowing/twisty/technical. */
+  flowingTurnPerKm: number;
+  twistyTurnPerKm: number;
+  technicalTurnPerKm: number;
 }
 
 export interface EngineConfig {
@@ -139,6 +209,7 @@ export interface EngineConfig {
   detection: CornerDetectionConfig;
   grading: GradingConfig;
   runtime: RuntimeConfig;
+  features: FeatureConfig;
 }
 
 export const DEFAULT_CONFIG: EngineConfig = {
@@ -205,6 +276,35 @@ export const DEFAULT_CONFIG: EngineConfig = {
     uTurnMeters: 60,
     announceUTurn: true,
     routeEndMeters: 50,
+    lateralG: 0.35,
+    brakingG: 0.35,
+    reactionSeconds: 1.5,
+    brakingAwareLead: false,
+    speedWarnings: false,
+    overspeedMargin: 0.5,
+    overspeedWord: "slow",
+    cautionCalls: false,
+    announceFeatures: false,
+    announceSections: false,
+    callStraights: false,
+    straightMinMeters: 500,
+  },
+  features: {
+    elevationSmoothMeters: 120,
+    gradientSpanMeters: 60,
+    steepDescentPercent: 7,
+    steepClimbPercent: 8,
+    steepMinMeters: 150,
+    crestGradientPercent: 4,
+    crestMinSpacingMeters: 200,
+    cautionMaxRallyNumber: 3,
+    cautionApproachMeters: 300,
+    cautionDescentPercent: 6,
+    sectionWindowMeters: 400,
+    sectionMinMeters: 600,
+    flowingTurnPerKm: 60,
+    twistyTurnPerKm: 250,
+    technicalTurnPerKm: 600,
   },
 };
 
@@ -226,6 +326,7 @@ export function resolveConfig(partial?: DeepPartial<EngineConfig>): EngineConfig
       },
     },
     runtime: { ...DEFAULT_CONFIG.runtime, ...(partial.runtime ?? {}) },
+    features: { ...DEFAULT_CONFIG.features, ...(partial.features ?? {}) },
   };
 }
 

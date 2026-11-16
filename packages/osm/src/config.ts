@@ -40,6 +40,8 @@ export interface OsmConfig {
   maxBoxesPerRequest: number;
   /** OSM `highway=*` values worth riding. */
   highwayTypes: string[];
+  /** Also fetch speed breakers, railway crossings and fords near the route. */
+  fetchHazardNodes: boolean;
   /** Cache entries older than this are refetched. Milliseconds. */
   cacheMaxAgeMs: number;
 
@@ -101,6 +103,7 @@ export const DEFAULT_OSM_CONFIG: OsmConfig = {
     "tertiary_link",
     "track",
   ],
+  fetchHazardNodes: true,
   cacheMaxAgeMs: 180 * 24 * 60 * 60 * 1000, // six months; roads move slowly
 
   sampleSpacingMeters: 15,

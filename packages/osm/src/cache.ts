@@ -30,7 +30,7 @@ interface CachedNetwork {
 }
 
 /** Bump when the stored shape changes, so old entries are ignored. */
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 export async function readCachedNetwork(
   store: KeyValueStore,

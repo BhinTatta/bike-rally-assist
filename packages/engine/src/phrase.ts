@@ -11,7 +11,7 @@
  */
 
 import type { RuntimeConfig } from "./config.js";
-import type { Call, Corner } from "./types.js";
+import type { Call, Corner, RoadFeature, RouteSection } from "./types.js";
 
 const capitalise = (s: string): string =>
   s.length === 0 ? s : s[0]!.toUpperCase() + s.slice(1);
@@ -59,6 +59,12 @@ export interface CornerCallInput {
   time: number;
   riderDist: number;
   speed: number;
+  /** Open with "caution". */
+  caution?: boolean;
+  /** Open with the overspeed word instead ("slow" / "brake"). */
+  overspeed?: boolean;
+  /** Estimated corner speed, carried on the call for the display. m/s. */
+  advisorySpeed?: number;
 }
 
 /** Build the full call for one corner (plus chained corners). */
@@ -94,7 +100,15 @@ export function buildCornerCall(
     parts.push(`into ${desc.text}`);
   }
 
-  return {
+  // One warning word at most, and "too fast" outranks "this one is nasty":
+  // the first is about what the rider is doing right now.
+  const warning = input.overspeed ? runtime.overspeedWord : input.caution ? "caution" : null;
+  if (warning) {
+    tokens.unshift(warning);
+    parts.unshift(warning);
+  }
+
+  const call: Call = {
     kind: "corner",
     cornerIds: input.corners.map((c) => c.id),
     text: capitalise(parts.join(", ")),
@@ -104,6 +118,160 @@ export function buildCornerCall(
     timeToCorner: input.timeToCorner,
     riderDist: input.riderDist,
     speed: input.speed,
+  };
+  if (input.caution) call.caution = true;
+  if (input.overspeed) call.overspeed = true;
+  if (input.advisorySpeed !== undefined && Number.isFinite(input.advisorySpeed)) {
+    call.advisorySpeed = input.advisorySpeed;
+  }
+  return call;
+}
+
+/**
+ * A length for speech: "400 metres", "1 kilometre", "2.5 kilometres".
+ * Rounded hard - nobody needs "1,340 metres" in their ear.
+ */
+export function spokenLength(meters: number): { text: string; tokens: string[] } {
+  if (meters < 950) {
+    const rounded = Math.max(50, Math.round(meters / 50) * 50);
+    return { text: `${rounded} metres`, tokens: [String(rounded), "metres"] };
+  }
+  const km = Math.round(meters / 500) / 2;
+  const unit = km === 1 ? "kilometre" : "kilometres";
+  return { text: `${km} ${unit}`, tokens: [String(km), unit] };
+}
+
+/** Plain and pacenote wording for each kind of road feature. */
+const FEATURE_WORDS: Record<
+  RoadFeature["kind"],
+  { plain: string; rally: string; caution?: boolean; noDistance?: boolean }
+> = {
+  crest: { plain: "crest", rally: "crest" },
+  dip: { plain: "dip", rally: "dip" },
+  "steep-descent": { plain: "steep descent", rally: "steep down", noDistance: true },
+  "steep-climb": { plain: "steep climb", rally: "steep up", noDistance: true },
+  surface: { plain: "rough surface", rally: "rough", caution: true },
+  bridge: { plain: "bridge", rally: "bridge" },
+  tunnel: { plain: "tunnel", rally: "tunnel" },
+  narrow: { plain: "road narrows", rally: "narrows" },
+  bump: { plain: "speed breaker", rally: "bump", caution: true },
+  "rail-crossing": { plain: "railway crossing", rally: "rail crossing", caution: true },
+  town: { plain: "village ahead", rally: "village", noDistance: true },
+};
+
+/** What a feature is called, for lists and the ride display. */
+export function featureLabel(feature: RoadFeature): string {
+  if (feature.label) return feature.label;
+  return FEATURE_WORDS[feature.kind].plain;
+}
+
+export interface FeatureCallInput {
+  feature: RoadFeature;
+  /** Distance from the rider to where the feature starts, metres. */
+  distance: number;
+  time: number;
+  riderDist: number;
+  speed: number;
+}
+
+/** "Caution, gravel, 150 metres" / "Crest, 100 metres" / "Steep descent, 1 kilometre". */
+export function buildFeatureCall(input: FeatureCallInput, runtime: RuntimeConfig): Call {
+  const { feature } = input;
+  const words = FEATURE_WORDS[feature.kind];
+  const name = (feature.label ?? (runtime.rallyMode ? words.rally : words.plain)).toLowerCase();
+  const tokens: string[] = [];
+  const parts: string[] = [];
+  if (words.caution) {
+    tokens.push("caution");
+    parts.push("caution");
+  }
+  tokens.push(...name.split(" "));
+  parts.push(name);
+
+  const length =
+    feature.endDist !== undefined ? Math.abs(feature.endDist - feature.dist) : 0;
+  if (words.noDistance) {
+    // These are stretches, not points: how long matters more than how far.
+    if (length >= 300) {
+      const spoken = spokenLength(length);
+      tokens.push(...spoken.tokens);
+      parts.push(spoken.text);
+    }
+  } else if (input.distance >= runtime.immediateMeters) {
+    const rounded = roundDistance(input.distance, runtime.distanceRoundingMeters);
+    tokens.push(String(rounded));
+    if (runtime.rallyMode) {
+      parts.push(String(rounded));
+    } else {
+      tokens.push("metres");
+      parts.push(`${rounded} metres`);
+    }
+  }
+
+  return {
+    kind: "feature",
+    cornerIds: [],
+    featureId: feature.id,
+    text: capitalise(parts.join(", ")),
+    tokens,
+    time: input.time,
+    distance: input.distance,
+    riderDist: input.riderDist,
+    speed: input.speed,
+  };
+}
+
+const SECTION_WORDS: Record<RouteSection["kind"], string> = {
+  straight: "road opens up",
+  flowing: "flowing bends",
+  twisty: "twisty section",
+  technical: "technical section",
+};
+
+/** "Twisty section, 3 kilometres, 4 hairpins". */
+export function buildSectionCall(
+  section: RouteSection,
+  time: number,
+  riderDist: number,
+): Call {
+  const name = SECTION_WORDS[section.kind];
+  const tokens = name.split(" ");
+  const parts = [name];
+  const spoken = spokenLength(section.endDist - section.startDist);
+  tokens.push(...spoken.tokens);
+  parts.push(spoken.text);
+  if (section.hairpinCount > 0) {
+    const word = section.hairpinCount === 1 ? "hairpin" : "hairpins";
+    tokens.push(String(section.hairpinCount), word);
+    parts.push(`${section.hairpinCount} ${word}`);
+  }
+  return {
+    kind: "section",
+    cornerIds: [],
+    text: capitalise(parts.join(", ")),
+    tokens,
+    time,
+    riderDist,
+  };
+}
+
+/** "Straight, 600 metres" / pacenote "Straight 600". */
+export function buildStraightCall(
+  meters: number,
+  time: number,
+  riderDist: number,
+  runtime: RuntimeConfig,
+): Call {
+  const spoken = spokenLength(meters);
+  const rally = runtime.rallyMode && meters < 950;
+  return {
+    kind: "straight",
+    cornerIds: [],
+    text: rally ? `Straight ${spoken.tokens[0]}` : `Straight, ${spoken.text}`,
+    tokens: rally ? ["straight", spoken.tokens[0]!] : ["straight", ...spoken.tokens],
+    time,
+    distance: meters,
+    riderDist,
   };
 }
 

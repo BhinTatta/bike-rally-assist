@@ -29,6 +29,7 @@ import {
 import type { GeoPoint } from "@rally/engine";
 import { resolveOsmConfig, type OsmConfig } from "./config.js";
 import { IndexedNetwork, type RoadPosition } from "./network.js";
+import { featuresFromNodes, featuresFromWays, transferElevation, type WaySpan } from "./tags.js";
 import type { MatchQuality, MatchResult, RoadNetwork } from "./types.js";
 
 interface Node {
@@ -183,7 +184,8 @@ export function matchToRoads(
   path.reverse();
 
   // --- stitch the OSM geometry back together ------------------------------
-  const geometry = stitch(path, network);
+  const stitched = stitch(path, network);
+  let geometry = stitched.geometry;
   const matchedCount = path.length;
   const totalSamples = matchedCount + unmatched;
   const offsets = path.map((p) => p.offset).sort((a, b) => a - b);
@@ -212,7 +214,42 @@ export function matchToRoads(
   if (reason) return fallback(reason, quality);
 
   quality.accepted = true;
-  return { geometry, usedOsm: true, quality, wayIds, roadNames };
+
+  // What the map says about the road itself. Never allowed to fail the match:
+  // the geometry is the point, the hazards are a bonus.
+  let features: MatchResult["features"] = [];
+  try {
+    const cumulative = cumulativeDistances(geometry);
+    const spans: WaySpan[] = [];
+    for (let i = 0; i < geometry.length; i++) {
+      const wayIndex = stitched.wayOf[i]!;
+      const lastSpan = spans[spans.length - 1];
+      const way = network.ways[wayIndex]!.way;
+      if (lastSpan && lastSpan.wayId === way.id) lastSpan.end = cumulative[i]!;
+      else {
+        // Start where the previous way stopped, so spans leave no gap.
+        const start = lastSpan ? lastSpan.end : cumulative[i]!;
+        spans.push({ wayId: way.id, tags: way.tags, start, end: cumulative[i]! });
+      }
+    }
+    features = [
+      ...featuresFromWays(spans),
+      ...featuresFromNodes(roadNetwork.nodes ?? [], geometry),
+    ];
+    geometry = transferElevation(cleaned, geometry);
+  } catch {
+    features = [];
+  }
+
+  return {
+    geometry,
+    usedOsm: true,
+    quality,
+    wayIds,
+    roadNames,
+    features,
+    geometryLength: matchedLength,
+  };
 }
 
 function rejectionReason(quality: MatchQuality, config: OsmConfig): string | undefined {
@@ -242,22 +279,32 @@ function rejectionReason(quality: MatchQuality, config: OsmConfig): string | und
  * Working pair by pair (rather than per run of one way) means an out-and-back
  * on a single way is drawn out and back, instead of collapsing to nothing.
  */
-function stitch(path: RoadPosition[], network: IndexedNetwork): GeoPoint[] {
+function stitch(
+  path: RoadPosition[],
+  network: IndexedNetwork,
+): { geometry: GeoPoint[]; wayOf: number[] } {
   const out: GeoPoint[] = [];
-  const push = (point: GeoPoint): void => {
+  /** Which way each output point lies on, so tags can be read back later. */
+  const wayOf: number[] = [];
+  const push = (point: GeoPoint, wayIndex: number): void => {
     const last = out[out.length - 1];
-    if (!last || haversine(last, point) > 0.05) out.push(point);
+    if (!last || haversine(last, point) > 0.05) {
+      out.push(point);
+      wayOf.push(wayIndex);
+    }
   };
 
-  push(path[0]!.point);
+  push(path[0]!.point, path[0]!.wayIndex);
   for (let i = 1; i < path.length; i++) {
     const from = path[i - 1]!;
     const to = path[i]!;
     if (from.wayIndex === to.wayIndex) {
-      for (const point of network.slice(from.wayIndex, from.along, to.along)) push(point);
+      for (const point of network.slice(from.wayIndex, from.along, to.along)) {
+        push(point, to.wayIndex);
+      }
     } else {
-      push(to.point);
+      push(to.point, to.wayIndex);
     }
   }
-  return out;
+  return { geometry: out, wayOf };
 }

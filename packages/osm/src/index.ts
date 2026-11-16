@@ -14,8 +14,9 @@ export * from "./overpass.js";
 export * from "./network.js";
 export * from "./match.js";
 export * from "./cache.js";
+export * from "./tags.js";
 
-import { analyseRoute } from "@rally/engine";
+import { analyseRoute, mergeFeatures } from "@rally/engine";
 import type { AnalysedRoute, DeepPartial, EngineConfig, GeoPoint } from "@rally/engine";
 import { resolveOsmConfig, type OsmConfig } from "./config.js";
 import { cacheKey, corridorBoxes, fetchRoadNetwork } from "./overpass.js";
@@ -106,7 +107,29 @@ export async function importRoute(
 ): Promise<{ route: AnalysedRoute; snap: SnapResult }> {
   const snap = await snapRouteToOsm(rawPoints, options);
   const route = analyseRoute(snap.geometry, options.engineConfig, options.name);
+  applyMapFeatures(route, snap);
   return { route, snap };
+}
+
+/**
+ * Put the hazards a match found onto the analysed route.
+ *
+ * The match measured them along the stitched OSM line; the analysed route has
+ * been resampled and smoothed since, which shortens it by a fraction of a
+ * percent. Scaling keeps a speed breaker 80 km in from drifting by metres.
+ */
+export function applyMapFeatures(route: AnalysedRoute, match: MatchResult): void {
+  if (!match.usedOsm || !match.features || match.features.length === 0) return;
+  const scale =
+    match.geometryLength && match.geometryLength > 0 ? route.length / match.geometryLength : 1;
+  mergeFeatures(
+    route,
+    match.features.map((feature) => ({
+      ...feature,
+      dist: feature.dist * scale,
+      ...(feature.endDist !== undefined ? { endDist: feature.endDist * scale } : {}),
+    })),
+  );
 }
 
 function rawFallback(points: GeoPoint[], reason: string): MatchResult {

@@ -8,9 +8,10 @@
  * see what it would have said instead.
  */
 
-import { Directory, File, Paths } from "expo-file-system";
 import { toGpx } from "@rally/engine";
-import type { Call, GpsFix } from "@rally/engine";
+import type { Call, GpsFix, RideModeId, RideStats } from "@rally/engine";
+
+import { fileUri, listFiles, readTextSync, removeFile, writeText } from "../storage/files";
 
 const RIDES_DIR = "rides";
 
@@ -29,16 +30,18 @@ export interface RideLog {
   distanceMeters: number;
   fixCount: number;
   calls: LoggedCall[];
+  /** The ride mode it was ridden in. */
+  mode?: RideModeId;
+  /** Speed, lean and the rest; absent on rides logged by older versions. */
+  stats?: RideStats;
 }
 
-export function ridesDirectory(): Directory {
-  const dir = new Directory(Paths.document, RIDES_DIR);
-  if (!dir.exists) dir.create({ intermediates: true });
-  return dir;
-}
+const gpxPath = (id: string): string => `${RIDES_DIR}/${id}.gpx`;
+const jsonPath = (id: string): string => `${RIDES_DIR}/${id}.json`;
 
-export const rideGpxFile = (id: string): File => new File(ridesDirectory(), `${id}.gpx`);
-export const rideJsonFile = (id: string): File => new File(ridesDirectory(), `${id}.json`);
+/** URIs of a ride's two files, for the share sheet. */
+export const rideGpxUri = (id: string): string => fileUri(gpxPath(id));
+export const rideJsonUri = (id: string): string => fileUri(jsonPath(id));
 
 /**
  * Accumulates a ride in memory and flushes to disk periodically, so a crash
@@ -49,6 +52,8 @@ export class RideLogger {
   private readonly calls: LoggedCall[] = [];
   private lastFlush = 0;
   private dirty = false;
+  private stats: RideStats | null = null;
+  private mode: RideModeId | null = null;
 
   constructor(
     readonly id: string,
@@ -56,7 +61,7 @@ export class RideLogger {
     private readonly routeName: string,
     private readonly startedAt = Date.now(),
     /** How often to write to disk, milliseconds. */
-    private readonly flushIntervalMs = 15_000,
+    private readonly flushIntervalMs = 60_000,
   ) {}
 
   addFix(fix: GpsFix): void {
@@ -74,23 +79,26 @@ export class RideLogger {
     return this.fixes.length;
   }
 
+  /** Latest stats from the ride engine, saved alongside the log. */
+  setStats(stats: RideStats, mode: RideModeId): void {
+    this.stats = stats;
+    this.mode = mode;
+  }
+
   /** Write the GPX and the call log. Safe to call often; cheap when clean. */
   flush(): void {
     if (!this.dirty) return;
     this.lastFlush = Date.now();
     this.dirty = false;
     try {
-      const gpx = rideGpxFile(this.id);
-      gpx.create({ overwrite: true });
-      gpx.write(
+      writeText(
+        gpxPath(this.id),
         toGpx(
           this.fixes.map((f) => ({ lat: f.lat, lon: f.lon, time: f.time })),
-          `${this.routeName} - ${new Date(this.startedAt).toLocaleString()}`,
+          `${this.routeName} - ${new Date(this.startedAt).toISOString()}`,
         ),
       );
-      const json = rideJsonFile(this.id);
-      json.create({ overwrite: true });
-      json.write(JSON.stringify(this.summary(), null, 1));
+      writeText(jsonPath(this.id), JSON.stringify(this.summary()));
     } catch {
       // Out of space or the directory vanished: never take the ride down.
     }
@@ -102,10 +110,12 @@ export class RideLogger {
       routeId: this.routeId,
       routeName: this.routeName,
       startedAt: this.startedAt,
-      distanceMeters: this.distance(),
+      distanceMeters: this.stats?.distanceMeters ?? this.distance(),
       fixCount: this.fixes.length,
       calls: this.calls,
     };
+    if (this.mode) log.mode = this.mode;
+    if (this.stats) log.stats = this.stats;
     if (ended) log.endedAt = Date.now();
     return log;
   }
@@ -115,9 +125,7 @@ export class RideLogger {
     this.flush();
     const log = this.summary(true);
     try {
-      const json = rideJsonFile(this.id);
-      json.create({ overwrite: true });
-      json.write(JSON.stringify(log, null, 1));
+      writeText(jsonPath(this.id), JSON.stringify(log));
     } catch {
       // As above.
     }
@@ -141,30 +149,29 @@ export class RideLogger {
 
 /** Every stored ride, newest first. */
 export function listRideLogs(): RideLog[] {
+  const logs: RideLog[] = [];
+  for (const name of listFiles(RIDES_DIR)) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      const text = readTextSync(`${RIDES_DIR}/${name}`);
+      if (text) logs.push(JSON.parse(text) as RideLog);
+    } catch {
+      // A half-written log from a killed process: skip it.
+    }
+  }
+  return logs.sort((a, b) => b.startedAt - a.startedAt);
+}
+
+export function loadRideLog(id: string): RideLog | null {
   try {
-    return ridesDirectory()
-      .list()
-      .filter((entry): entry is File => entry instanceof File && entry.uri.endsWith(".json"))
-      .map((file) => {
-        try {
-          return JSON.parse(file.textSync()) as RideLog;
-        } catch {
-          return null;
-        }
-      })
-      .filter((log): log is RideLog => log !== null)
-      .sort((a, b) => b.startedAt - a.startedAt);
+    const text = readTextSync(jsonPath(id));
+    return text ? (JSON.parse(text) as RideLog) : null;
   } catch {
-    return [];
+    return null;
   }
 }
 
 export function deleteRideLog(id: string): void {
-  for (const file of [rideGpxFile(id), rideJsonFile(id)]) {
-    try {
-      if (file.exists) file.delete();
-    } catch {
-      // Nothing useful to do.
-    }
-  }
+  removeFile(gpxPath(id));
+  removeFile(jsonPath(id));
 }

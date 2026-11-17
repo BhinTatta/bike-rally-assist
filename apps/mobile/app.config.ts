@@ -4,13 +4,13 @@ import type { ExpoConfig } from "expo/config";
  * Expo app config.
  *
  * This is a dev-build app, not an Expo Go app: it uses background location, a
- * foreground service and MapLibre, none of which exist in Expo Go.
+ * foreground service, which do not exist in Expo Go.
  */
 const config: ExpoConfig = {
   name: "Rally Co-Driver",
   slug: "rally-codriver",
   scheme: "rallycodriver",
-  version: "0.1.0",
+  version: "0.2.0",
   orientation: "portrait",
   userInterfaceStyle: "dark",
   backgroundColor: "#0b0d10",
@@ -18,7 +18,7 @@ const config: ExpoConfig = {
 
   android: {
     package: "com.bhintatta.rallycodriver",
-    versionCode: 1,
+    versionCode: 2,
     adaptiveIcon: {
       foregroundImage: "./assets/icon.png",
       backgroundColor: "#0b0d10",
@@ -101,7 +101,6 @@ const config: ExpoConfig = {
         enableBackgroundPlayback: true,
       },
     ],
-    "@maplibre/maplibre-react-native",
     [
       "expo-build-properties",
       {
@@ -116,6 +115,10 @@ const config: ExpoConfig = {
     // provided; a no-op otherwise, so local builds keep working.
     "./plugins/withReleaseSigning",
   ],
+
+  // The browser build is a development tool: every screen, and a previewed
+  // ride, without a phone. It is never shipped.
+  web: { bundler: "metro", output: "single" },
 
   experiments: { typedRoutes: false },
 };

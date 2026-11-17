@@ -19,7 +19,7 @@
  * can see.
  */
 
-import { File, Paths } from "expo-file-system";
+import { readTextSync, removeFile, writeText } from "./storage/files";
 
 export interface CrashRecord {
   time: number;
@@ -31,10 +31,10 @@ export interface CrashRecord {
   fatal: boolean;
 }
 
-const crashFile = (): File => new File(Paths.document, "last-crash.json");
-const rideMarkerFile = (): File => new File(Paths.document, "ride-screen-marker.json");
-const breadcrumbFile = (): File => new File(Paths.document, "breadcrumb.json");
-const heartbeatFile = (): File => new File(Paths.document, "heartbeat.json");
+const CRASH_FILE = "last-crash.json";
+const RIDE_MARKER_FILE = "ride-screen-marker.json";
+const BREADCRUMB_FILE = "breadcrumb.json";
+const HEARTBEAT_FILE = "heartbeat.json";
 
 let phase = "startup";
 
@@ -43,19 +43,18 @@ export function setPhase(next: string): void {
   phase = next;
 }
 
-function writeJson(file: File, value: unknown): void {
+function writeJson(path: string, value: unknown): void {
   try {
-    file.create({ overwrite: true });
-    file.write(JSON.stringify(value));
+    writeText(path, JSON.stringify(value));
   } catch {
     // If we cannot even write the crash log there is nothing left to try.
   }
 }
 
-function readJson<T>(file: File): T | null {
+function readJson<T>(path: string): T | null {
   try {
-    if (!file.exists) return null;
-    return JSON.parse(file.textSync()) as T;
+    const text = readTextSync(path);
+    return text === null ? null : (JSON.parse(text) as T);
   } catch {
     return null;
   }
@@ -63,17 +62,21 @@ function readJson<T>(file: File): T | null {
 
 export function recordCrash(error: unknown, fatal: boolean): void {
   const err = error instanceof Error ? error : new Error(String(error));
-  writeJson(crashFile(), {
+  writeJson(CRASH_FILE, {
     time: Date.now(),
     name: err.name,
     message: err.message,
-    stack: err.stack,
+    ...(err.stack ? { stack: err.stack } : {}),
     phase,
     fatal,
   } satisfies CrashRecord);
 }
 
-export const readLastCrash = (): CrashRecord | null => readJson<CrashRecord>(crashFile());
+export const readLastCrash = (): CrashRecord | null => readJson<CrashRecord>(CRASH_FILE);
+
+export function clearLastCrash(): void {
+  removeFile(CRASH_FILE);
+}
 
 // ------------------------------------------------------------- breadcrumbs
 
@@ -92,18 +95,13 @@ export interface Breadcrumb {
  * ride start, and not the per-fix hot path.
  */
 export function breadcrumb(step: string): void {
-  writeJson(breadcrumbFile(), { step, at: Date.now() } satisfies Breadcrumb);
+  writeJson(BREADCRUMB_FILE, { step, at: Date.now() } satisfies Breadcrumb);
 }
 
-export const readBreadcrumb = (): Breadcrumb | null => readJson<Breadcrumb>(breadcrumbFile());
+export const readBreadcrumb = (): Breadcrumb | null => readJson<Breadcrumb>(BREADCRUMB_FILE);
 
 export function clearBreadcrumb(): void {
-  try {
-    const file = breadcrumbFile();
-    if (file.exists) file.delete();
-  } catch {
-    // Nothing useful to do.
-  }
+  removeFile(BREADCRUMB_FILE);
 }
 
 /**
@@ -126,29 +124,15 @@ export function lastCrashWasAudio(): boolean {
  * points somewhere else entirely.
  */
 export function heartbeat(): void {
-  writeJson(heartbeatFile(), { at: Date.now() });
+  writeJson(HEARTBEAT_FILE, { at: Date.now() });
 }
 
 export function readHeartbeat(): number | null {
-  return readJson<{ at: number }>(heartbeatFile())?.at ?? null;
+  return readJson<{ at: number }>(HEARTBEAT_FILE)?.at ?? null;
 }
 
 export function clearHeartbeat(): void {
-  try {
-    const file = heartbeatFile();
-    if (file.exists) file.delete();
-  } catch {
-    // Nothing useful to do.
-  }
-}
-
-export function clearLastCrash(): void {
-  try {
-    const file = crashFile();
-    if (file.exists) file.delete();
-  } catch {
-    // Nothing useful to do.
-  }
+  removeFile(HEARTBEAT_FILE);
 }
 
 /**
@@ -173,24 +157,31 @@ export function installCrashHandler(): void {
 
 // ----------------------------------------------------------- ride watchdog
 
-interface RideMarker {
+export interface RideMarker {
   openedAt: number;
   routeName: string;
+  /**
+   * How the ride was getting its positions. If a ride start dies while the
+   * background service is in play, the next one runs without it.
+   */
+  locationMode?: "background" | "foreground" | "demo";
 }
 
 /** Called as the ride screen mounts. */
-export function markRideScreenOpened(routeName: string): void {
-  writeJson(rideMarkerFile(), { openedAt: Date.now(), routeName } satisfies RideMarker);
+export function markRideScreenOpened(
+  routeName: string,
+  locationMode?: RideMarker["locationMode"],
+): void {
+  writeJson(RIDE_MARKER_FILE, {
+    openedAt: Date.now(),
+    routeName,
+    ...(locationMode ? { locationMode } : {}),
+  } satisfies RideMarker);
 }
 
 /** Called once the ride screen has survived long enough to be trusted. */
 export function markRideScreenHealthy(): void {
-  try {
-    const file = rideMarkerFile();
-    if (file.exists) file.delete();
-  } catch {
-    // Worst case the next launch is cautious for no reason.
-  }
+  removeFile(RIDE_MARKER_FILE);
 }
 
 /**
@@ -198,5 +189,5 @@ export function markRideScreenHealthy(): void {
  * straight back into it.
  */
 export function rideScreenCrashedLastTime(): RideMarker | null {
-  return readJson<RideMarker>(rideMarkerFile());
+  return readJson<RideMarker>(RIDE_MARKER_FILE);
 }

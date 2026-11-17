@@ -35,6 +35,8 @@ export interface VoiceOptions {
   rate: number;
   /** BCP 47 language tag. */
   language: string;
+  /** A specific installed voice, or null for the system default. */
+  voiceId?: string | null;
 }
 
 /** Device text-to-speech. */
@@ -64,6 +66,7 @@ export class TtsVoice implements Voice {
       Speech.speak(call.text, {
         language: this.options.language,
         rate: this.options.rate,
+        ...(this.options.voiceId ? { voice: this.options.voiceId } : {}),
         onDone: finish,
         onStopped: finish,
         onError: finish,
@@ -72,9 +75,39 @@ export class TtsVoice implements Voice {
   }
 
   async stop(): Promise<void> {
-    await Speech.stop();
+    try {
+      await Speech.stop();
+    } catch {
+      // Nothing was speaking, or the engine is gone: either way it is quiet.
+    }
   }
 }
+
+export interface InstalledVoice {
+  id: string;
+  name: string;
+  language: string;
+}
+
+/** English voices installed on the phone, best first. Empty if none can be listed. */
+export async function listEnglishVoices(): Promise<InstalledVoice[]> {
+  try {
+    const voices = await Speech.getAvailableVoicesAsync();
+    return voices
+      .filter((voice) => /^en[-_]/i.test(voice.language) || voice.language === "en")
+      .map((voice) => ({ id: voice.identifier, name: voice.name, language: voice.language }))
+      .sort((a, b) => {
+        // Indian English first: it pronounces the road names riders will hear.
+        const rank = (v: InstalledVoice): number => (/IN/i.test(v.language) ? 0 : 1);
+        return rank(a) - rank(b) || a.language.localeCompare(b.language) || a.name.localeCompare(b.name);
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** Commentary: nice to hear, never worth delaying a corner for. */
+const isCommentary = (call: Call): boolean => call.kind === "section" || call.kind === "straight";
 
 export interface CallQueueOptions {
   /** Hold a near-silent stream open so the headset stays awake. */
@@ -95,6 +128,8 @@ export interface CallQueueOptions {
   skipAudioSession?: boolean;
   /** Decides whether a queued call is still worth saying. */
   isStale?: (call: Call) => boolean;
+  /** Keep everything running but say nothing (the mute button). */
+  muted?: boolean;
 }
 
 /**
@@ -103,6 +138,8 @@ export interface CallQueueOptions {
 export class CallQueue {
   private queue: Call[] = [];
   private speaking = false;
+  /** What is coming out of the speaker right now. */
+  private current: Call | null = null;
   private keepAlive: AudioPlayer | null = null;
   private keepAliveWatchdog: ReturnType<typeof setInterval> | null = null;
   private started = false;
@@ -119,7 +156,15 @@ export class CallQueue {
   setOptions(options: CallQueueOptions): void {
     const wasKeepingAwake = this.options.keepHeadsetAwake;
     this.options = options;
-    if (this.keepAlive) this.keepAlive.volume = keepAliveVolume(options.volume);
+    try {
+      if (this.keepAlive) this.keepAlive.volume = keepAliveVolume(options.volume);
+    } catch {
+      // A dead player is replaced by the watchdog; the options still apply.
+    }
+    if (options.muted) {
+      this.queue = [];
+      void this.voice.stop();
+    }
     if (this.started && wasKeepingAwake !== options.keepHeadsetAwake) {
       if (options.keepHeadsetAwake) this.startKeepAlive();
       else this.stopKeepAlive();
@@ -169,8 +214,24 @@ export class CallQueue {
 
   /** Queue a call. Returns immediately; speaking happens in the background. */
   enqueue(call: Call): void {
-    this.queue.push(call);
+    if (this.options.muted) return;
+    if (isCommentary(call)) {
+      this.queue.push(call);
+    } else {
+      // A corner or a hazard goes ahead of any commentary still waiting, and
+      // cuts short commentary that is being spoken: "twisty section, three
+      // kilometres" must never be the reason a hairpin was called late.
+      this.queue = this.queue.filter((queued) => !isCommentary(queued));
+      this.queue.push(call);
+      if (this.current && isCommentary(this.current)) void this.voice.stop();
+    }
     void this.drain();
+  }
+
+  /** Drop everything waiting and stop whatever is being said. */
+  async clear(): Promise<void> {
+    this.queue = [];
+    await this.voice.stop();
   }
 
   /** Say something right now, jumping the queue (used by "test voice"). */
@@ -194,9 +255,12 @@ export class CallQueue {
         // By the time we get to it, the corner may be behind us. Saying
         // "sharp right, 80" as you exit the corner is actively dangerous.
         if (this.options.isStale?.(call) === true) continue;
+        this.current = call;
         await this.voice.speak(call);
+        this.current = null;
       }
     } finally {
+      this.current = null;
       this.speaking = false;
     }
   }

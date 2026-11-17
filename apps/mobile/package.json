@@ -10,10 +10,11 @@
     "prebuild": "expo prebuild --clean",
     "typecheck": "tsc --noEmit",
     "test": "echo \"(mobile logic is tested in @rally/engine)\"",
-    "build": "echo \"(apk built by expo prebuild + gradle; see .github/workflows)\""
+    "build": "echo \"(apk built by expo prebuild + gradle; see .github/workflows)\"",
+    "web": "expo start --web"
   },
   "dependencies": {
-    "@maplibre/maplibre-react-native": "^11.5.0",
+    "@expo/metro-runtime": "~57.0.16",
     "@rally/engine": "workspace:*",
     "@rally/osm": "workspace:*",
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -37,13 +38,15 @@
     "expo-system-ui": "~57.0.4",
     "expo-task-manager": "~57.0.21",
     "react": "19.2.3",
+    "react-dom": "19.2.3",
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
-    "react-native-screens": "~4.26.0"
+    "react-native-screens": "~4.26.0",
+    "react-native-svg": "15.15.4",
+    "react-native-web": "~0.21.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
-    "typescript": "~6.0.3",
-    "@types/geojson": "^7946.0.16"
+    "typescript": "~6.0.3"
   }
 }

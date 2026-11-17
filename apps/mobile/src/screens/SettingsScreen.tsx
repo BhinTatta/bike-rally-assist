@@ -1,346 +1,513 @@
 /**
  * Settings.
  *
- * Every control here changes how the calls sound or when they arrive, and each
- * one says what it does in a sentence, because "lead time: 5" means nothing
- * on its own.
+ * Grouped by what the rider is trying to change - how it talks, what it
+ * mentions, how it sounds, how reliable it is on this phone - and every
+ * control says what it does in a sentence, because "lead adjust: +1" means
+ * nothing on its own.
  */
 
-import { useCallback, useEffect, useState } from "react";
-import { Alert, StyleSheet } from "react-native";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { rideMode } from "@rally/engine";
 
 import {
-  Body,
   Button,
   Card,
-  Choice,
-  Row,
-  SectionHeader,
+  Divider,
+  Header,
+  Heading,
+  Label,
+  ListItem,
   Screen,
-  Subtitle,
-  Title,
+  Segmented,
+  Small,
   Toggle,
 } from "../ui/components";
-import { spacing } from "../ui/theme";
+import { confirm, inform, notify } from "../ui/dialog";
+import { Icon } from "../ui/icons";
+import { ModePicker } from "../ui/ModePicker";
+import { shareFile } from "../ui/share";
+import { colors, modeColors, radius, spacing } from "../ui/theme";
 import {
   DEFAULT_SETTINGS,
   loadSettings,
+  runtimeFor,
   saveSettings,
+  type Phrasing,
   type Settings,
   type Verbosity,
 } from "../storage/settings";
+import { writeTemp } from "../storage/files";
 import { rideEngine } from "../ride/rideEngine";
+import { listEnglishVoices, type InstalledVoice } from "../ride/speech";
 import {
   checkPermissions,
   openBatteryOptimisationSettings,
   requestBackground,
   type PermissionState,
 } from "../ride/permissions";
-import { clearLastCrash, readLastCrash, type CrashRecord } from "../diagnostics";
+import { clearLastCrash, readBreadcrumb, readLastCrash, type CrashRecord } from "../diagnostics";
 import { runSelfTest } from "../ride/selfTest";
+import type { RootStackParamList } from "../navigation";
 
-export function SettingsScreen() {
+type Props = NativeStackScreenProps<RootStackParamList, "Settings">;
+
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <View style={styles.group}>
+      <Label>{title}</Label>
+      <Card>{children}</Card>
+    </View>
+  );
+}
+
+function Field({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+  return (
+    <View style={styles.field}>
+      <Heading>{title}</Heading>
+      {hint ? <Small>{hint}</Small> : null}
+      {children}
+    </View>
+  );
+}
+
+export function SettingsScreen({ navigation }: Props) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [crash, setCrash] = useState<CrashRecord | null>(null);
   const [testing, setTesting] = useState(false);
   const [testProgress, setTestProgress] = useState<string | null>(null);
   const [permissions, setPermissions] = useState<PermissionState | null>(null);
+  const [voices, setVoices] = useState<InstalledVoice[]>([]);
+  const [showVoices, setShowVoices] = useState(false);
+  const native = Platform.OS !== "web";
 
   useEffect(() => {
     void loadSettings().then(setSettings);
-    void checkPermissions().then(setPermissions);
+    if (native) void checkPermissions().then(setPermissions).catch(() => undefined);
+    void listEnglishVoices().then(setVoices);
     setCrash(readLastCrash());
+  }, [native]);
+
+  const update = useCallback((patch: Partial<Settings>) => {
+    setSettings((current) => {
+      if (!current) return current;
+      const next = { ...current, ...patch };
+      void saveSettings(next);
+      // A ride may be in progress; apply immediately rather than next time.
+      if (rideEngine.isActive) void rideEngine.applySettings(next);
+      return next;
+    });
   }, []);
 
-  const update = useCallback(
-    (patch: Partial<Settings>) => {
-      setSettings((current) => {
-        if (!current) return current;
-        const next = { ...current, ...patch };
-        void saveSettings(next);
-        // A ride may be in progress; apply immediately rather than next time.
-        if (rideEngine.isActive) void rideEngine.applySettings(next);
-        return next;
+  const selfTest = useCallback(() => {
+    setTesting(true);
+    void runSelfTest(setTestProgress)
+      .then((result) =>
+        inform(
+          "Self-test finished",
+          `${result.audioOk ? "Audio OK" : "Audio FAILED"} · ${
+            result.locationOk ? "Location OK" : "Location FAILED"
+          }\n\n${result.notes.join("\n\n")}`,
+        ),
+      )
+      .catch((error: Error) => inform("Self-test failed", error.message))
+      .finally(() => {
+        setTesting(false);
+        setTestProgress(null);
       });
-    },
-    [],
-  );
+  }, []);
 
-  if (!settings) return <Screen />;
+  const shareDiagnostics = useCallback(() => {
+    const trail = readBreadcrumb();
+    const text = [
+      `Rally Co-Driver diagnostics, ${new Date().toISOString()}`,
+      `platform: ${Platform.OS} ${String(Platform.Version)}`,
+      `settings: ${JSON.stringify(settings)}`,
+      `permissions: ${JSON.stringify(permissions)}`,
+      trail ? `last step: ${trail.step} at ${new Date(trail.at).toISOString()}` : "last step: none",
+      crash
+        ? `last error (${new Date(crash.time).toISOString()}, during ${crash.phase}): ${crash.name}: ${crash.message}\n${crash.stack ?? ""}`
+        : "last error: none",
+    ].join("\n");
+    try {
+      void shareFile(writeTemp("rally-diagnostics.txt", text), "text/plain");
+    } catch {
+      notify("Could not write the report", "bad");
+    }
+  }, [crash, permissions, settings]);
+
+  if (!settings) {
+    return (
+      <Screen scroll={false}>
+        <Header title="Settings" onBack={() => navigation.goBack()} />
+      </Screen>
+    );
+  }
+
+  const mode = rideMode(settings.mode);
+  const tint = modeColors[settings.mode];
+  const runtime = runtimeFor(settings);
+  const voiceName =
+    voices.find((voice) => voice.id === settings.voiceId)?.name ?? "System default";
 
   return (
-    <Screen>
-      <SectionHeader>Calls</SectionHeader>
-      <Card>
-        <Title>Lead time</Title>
-        <Subtitle>
-          How far ahead of a corner the call arrives. Shorter feels urgent; longer gives you time
-          to set up, but on a twisty ghat the calls start running together.
-        </Subtitle>
-        <Choice<number>
-          value={settings.leadSeconds}
-          onChange={(leadSeconds) => update({ leadSeconds })}
-          options={[
-            { value: 3, label: "3 s" },
-            { value: 4, label: "4 s" },
-            { value: 5, label: "5 s" },
-            { value: 6, label: "6 s" },
-            { value: 8, label: "8 s" },
-          ]}
-        />
-      </Card>
+    <Screen style={styles.content}>
+      <Header title="Settings" onBack={() => navigation.goBack()} />
+      <View style={styles.padded}>
+        <Group title="Ride mode">
+          <ModePicker value={settings.mode} onChange={(next) => void rideEngine.setMode(next).then(() => update({ mode: next }))} />
+        </Group>
 
-      <Card>
-        <Title>What to call</Title>
-        <Subtitle>
-          Every corner is useful on an unknown road. On a road you know, only the tight ones are
-          worth hearing.
-        </Subtitle>
-        <Choice<Verbosity>
-          value={settings.verbosity}
-          onChange={(verbosity) => update({ verbosity })}
-          options={[
-            { value: "all", label: "All" },
-            { value: "sharp-and-above", label: "Sharp +" },
-            { value: "hairpins-only", label: "Hairpins" },
-          ]}
-        />
-      </Card>
+        <Group title={`Fine-tune ${mode.name}`}>
+          <Field
+            title="Call timing"
+            hint={`${mode.name} calls about ${runtime.leadSeconds?.toFixed(1)} s before a corner, and earlier still when you need room to brake.`}
+          >
+            <Segmented<number>
+              tint={tint}
+              value={settings.leadAdjustSeconds}
+              onChange={(leadAdjustSeconds) => update({ leadAdjustSeconds })}
+              options={[
+                { value: -1, label: "Later" },
+                { value: 0, label: "Standard" },
+                { value: 1.5, label: "Earlier" },
+                { value: 3, label: "Earliest" },
+              ]}
+            />
+          </Field>
+          <Divider />
+          <Field title="Which corners" hint="On a road you know, only the tight ones are worth hearing.">
+            <Segmented<Verbosity>
+              tint={tint}
+              value={settings.verbosity}
+              onChange={(verbosity) => update({ verbosity })}
+              options={[
+                { value: "mode", label: "By mode" },
+                { value: "all", label: "All" },
+                { value: "sharp-and-above", label: "Sharp +" },
+                { value: "hairpins-only", label: "Hairpins" },
+              ]}
+            />
+          </Field>
+          <Divider />
+          <Field
+            title="Wording"
+            hint={
+              runtime.rallyMode
+                ? 'Pacenotes: "Right 3, 80". 1 is a hairpin, 6 barely a bend.'
+                : 'Plain words: "Sharp right, 80 metres".'
+            }
+          >
+            <Segmented<Phrasing>
+              tint={tint}
+              value={settings.phrasing}
+              onChange={(phrasing) => update({ phrasing })}
+              options={[
+                { value: "mode", label: "By mode" },
+                { value: "plain", label: "Plain" },
+                { value: "pacenotes", label: "Pacenotes" },
+              ]}
+            />
+          </Field>
+        </Group>
 
-      <Card>
-        <Title>Style</Title>
-        <Subtitle>
-          {settings.rallyMode
-            ? 'Rally pacenotes: "Right 3, 80". Fewer syllables, quicker to hear once you know the numbers (1 is tightest).'
-            : 'Plain language: "Sharp right, 80 metres".'}
-        </Subtitle>
-        <Choice<string>
-          value={settings.rallyMode ? "rally" : "plain"}
-          onChange={(value) => update({ rallyMode: value === "rally" })}
-          options={[
-            { value: "plain", label: "Plain" },
-            { value: "rally", label: "Rally" },
-          ]}
-        />
-      </Card>
-
-      <Card>
-        <Title>Timing correction</Title>
-        <Subtitle>
-          Compensates for the delay between deciding to speak and you hearing it. Raise it if calls
-          feel late - some Bluetooth codecs buffer deeply.
-        </Subtitle>
-        <Choice<number>
-          value={settings.lagSeconds}
-          onChange={(lagSeconds) => update({ lagSeconds })}
-          options={[
-            { value: 0.5, label: "0.5 s" },
-            { value: 1, label: "1 s" },
-            { value: 1.5, label: "1.5 s" },
-            { value: 2, label: "2 s" },
-          ]}
-        />
-      </Card>
-
-      <SectionHeader>Voice</SectionHeader>
-      <Card>
-        <Title>Speaking rate</Title>
-        <Choice<number>
-          value={settings.speechRate}
-          onChange={(speechRate) => update({ speechRate })}
-          options={[
-            { value: 0.9, label: "Slow" },
-            { value: 1, label: "Normal" },
-            { value: 1.15, label: "Quick" },
-            { value: 1.3, label: "Rally" },
-          ]}
-        />
-      </Card>
-
-      <Card>
-        <Title>Volume</Title>
-        <Subtitle>
-          Device speech comes out at the phone's media volume, so use the volume keys while a call
-          plays to set it. This slider sets the level of the headset keep-alive stream, and of
-          recorded voice clips when those arrive.
-        </Subtitle>
-        <Choice<number>
-          value={settings.voiceVolume}
-          onChange={(voiceVolume) => update({ voiceVolume })}
-          options={[
-            { value: 0.25, label: "25%" },
-            { value: 0.5, label: "50%" },
-            { value: 0.75, label: "75%" },
-            { value: 1, label: "100%" },
-          ]}
-        />
-        <Button
-          label="Test voice"
-          onPress={() => void rideEngine.testVoice(settings)}
-          style={styles.spaced}
-        />
-      </Card>
-
-      <Card>
-        <Toggle
-          label="Keep audio alive in the background"
-          description="Lets the keep-alive stream carry on with the screen off. This starts a second Android foreground service alongside the location one; leave it off unless you need it, and turn it off again if rides stop crashing only when it is off."
-          value={settings.backgroundAudio}
-          onChange={(backgroundAudio) => update({ backgroundAudio })}
-        />
-      </Card>
-
-      <Card>
-        <Toggle
-          label="Keep the headset awake"
-          description="Holds a near-silent stream open during a ride. Without it, Bluetooth headsets power down between calls and clip the first word."
-          value={settings.keepHeadsetAwake}
-          onChange={(keepHeadsetAwake) => update({ keepHeadsetAwake })}
-        />
-      </Card>
-
-      <SectionHeader>Routes and rides</SectionHeader>
-      <Card>
-        <Toggle
-          label="Snap imports to OpenStreetMap"
-          description="Matches an imported GPX onto surveyed road geometry, which makes corner radii far more accurate. Needs a connection at import time; cached afterwards."
-          value={settings.useOsmSnapping}
-          onChange={(useOsmSnapping) => update({ useOsmSnapping })}
-        />
-      </Card>
-      <Card>
-        <Toggle
-          label="Record rides"
-          description="Saves each ride as a GPX plus a log of every call, so you can replay it and tune the thresholds."
-          value={settings.logRides}
-          onChange={(logRides) => update({ logRides })}
-        />
-      </Card>
-
-      <SectionHeader>Android</SectionHeader>
-      <Card>
-        <Title>Location permission</Title>
-        <Subtitle>
-          {permissions === null
-            ? "Checking…"
-            : permissions.background
-              ? 'Set to "Allow all the time". Rides keep calling corners with the phone locked in a pocket or on a mount.'
-              : 'Set to "While using the app". Rides still work, but only with the screen on and the app in front — Android stops location the moment the phone locks.'}
-        </Subtitle>
-        {permissions !== null && !permissions.background ? (
-          <Button
-            label="Allow all the time"
-            style={styles.spaced}
-            onPress={() => {
-              void requestBackground().then(() =>
-                checkPermissions().then(setPermissions),
-              );
-            }}
+        <Group title="What it mentions">
+          <Toggle
+            tint={tint}
+            label="Road hazards"
+            description="Crests, steep descents, surface changes, speed breakers, railway crossings - where the map or the GPX knows about them."
+            value={settings.announceHazards}
+            onChange={(announceHazards) => update({ announceHazards })}
           />
-        ) : null}
-      </Card>
+          <Divider />
+          <Toggle
+            tint={tint}
+            label="Caution corners"
+            description='Says "caution" before a tight corner at the end of a fast stretch or on a steep descent.'
+            value={settings.cautionCalls}
+            onChange={(cautionCalls) => update({ cautionCalls })}
+          />
+          <Divider />
+          <Toggle
+            tint={tint}
+            label="Too-fast warning"
+            description={`Says "${mode.runtime.overspeedWord ?? "slow"}" when there is no longer room to slow comfortably for the corner.`}
+            value={settings.speedWarnings}
+            onChange={(speedWarnings) => update({ speedWarnings })}
+          />
+          <Divider />
+          <Toggle
+            tint={tint}
+            label="Road character"
+            description='"Twisty section, 3 kilometres" when the road changes. Cruise and Sport only.'
+            value={settings.announceSections}
+            onChange={(announceSections) => update({ announceSections })}
+          />
+        </Group>
 
-      <Card>
-        <Title>Self-test</Title>
-        <Subtitle>
-          Runs everything a ride start does to the phone — audio session, headset keep-alive,
-          location service — and holds it for twelve seconds, which is long enough for Android
-          to object if it is going to. No route or GPS fix needed. If the app closes during
-          this, reopen it and the report will name the exact step.
-        </Subtitle>
-        {testProgress ? <Body dim>{testProgress}</Body> : null}
-        <Button
-          label="Run self-test"
-          busy={testing}
-          style={styles.spaced}
-          onPress={() => {
-            setTesting(true);
-            void runSelfTest(setTestProgress)
-              .then((result) => {
-                Alert.alert(
-                  "Self-test finished",
-                  `${result.audioOk ? "Audio OK" : "Audio FAILED"}\n${
-                    result.locationOk ? "Location service OK" : "Location service FAILED"
-                  }\n\n${result.notes.join("\n")}`,
-                );
-              })
-              .catch((error: Error) =>
-                Alert.alert("Self-test failed", error.message),
-              )
-              .finally(() => {
-                setTesting(false);
-                setTestProgress(null);
-              });
-          }}
-        />
-      </Card>
+        <Group title="Voice">
+          <ListItem
+            icon="volume"
+            label="Voice"
+            value={voiceName}
+            onPress={() => setShowVoices((open) => !open)}
+          />
+          {showVoices ? (
+            <View style={styles.voices}>
+              <VoiceOption
+                name="System default"
+                detail="Whatever the phone normally speaks with"
+                selected={settings.voiceId === null}
+                onPress={() => update({ voiceId: null })}
+              />
+              {voices.slice(0, 24).map((voice) => (
+                <VoiceOption
+                  key={voice.id}
+                  name={voice.name}
+                  detail={voice.language}
+                  selected={settings.voiceId === voice.id}
+                  onPress={() => update({ voiceId: voice.id })}
+                />
+              ))}
+              {voices.length === 0 ? (
+                <Small>No other English voices are installed. Add some in Android's text-to-speech settings.</Small>
+              ) : null}
+            </View>
+          ) : null}
+          <Divider />
+          <Field title="Speaking rate">
+            <Segmented<number>
+              tint={tint}
+              value={settings.speechRate}
+              onChange={(speechRate) => update({ speechRate })}
+              options={[
+                { value: 0.9, label: "Slow" },
+                { value: 1, label: "Normal" },
+                { value: 1.15, label: "Quick" },
+                { value: 1.3, label: "Rally" },
+              ]}
+            />
+          </Field>
+          <Divider />
+          <Field
+            title="Timing correction"
+            hint="Raise it if calls feel late - some Bluetooth headsets buffer deeply."
+          >
+            <Segmented<number>
+              tint={tint}
+              value={settings.lagSeconds}
+              onChange={(lagSeconds) => update({ lagSeconds })}
+              options={[
+                { value: 0.5, label: "0.5 s" },
+                { value: 1, label: "1 s" },
+                { value: 1.5, label: "1.5 s" },
+                { value: 2, label: "2 s" },
+              ]}
+            />
+          </Field>
+          <Button label="Test the voice" icon="play" onPress={() => void rideEngine.testVoice(settings)} />
+          <Small>Loudness follows the phone's media volume: press the volume keys while it speaks.</Small>
+        </Group>
 
-      <Card>
-        <Title>Battery optimisation</Title>
-        <Subtitle>
-          Xiaomi, Oppo, Vivo, Realme and OnePlus phones kill background apps hard. If the calls go
-          silent after a few minutes with the screen off, exempt this app - and on those phones also
-          turn on "Autostart" in the phone's own security app, which no app can do for you.
-        </Subtitle>
-        <Button
-          label="Open battery settings"
-          onPress={() => void openBatteryOptimisationSettings()}
-          style={styles.spaced}
-        />
-      </Card>
+        <Group title="Ride screen">
+          <Toggle
+            tint={tint}
+            label="Show estimated corner speed"
+            description="A rough figure from the corner's radius on the map. It knows nothing about grip, camber or traffic."
+            value={settings.showCornerSpeed}
+            onChange={(showCornerSpeed) => update({ showCornerSpeed })}
+          />
+          <Divider />
+          <Toggle
+            tint={tint}
+            label="Vibrate on each call"
+            description="Proof the app is alive even if the headset has dropped out."
+            value={settings.haptics}
+            onChange={(haptics) => update({ haptics })}
+          />
+        </Group>
 
-      {crash ? (
-        <>
-          <SectionHeader>Diagnostics</SectionHeader>
-          <Card>
-            <Title>Last error</Title>
-            <Subtitle>
-              {`${new Date(crash.time).toLocaleString()} — during ${crash.phase}`}
-            </Subtitle>
-            <Body>{`${crash.name}: ${crash.message}`}</Body>
-            {crash.stack ? <Body dim>{crash.stack.split("\n").slice(0, 6).join("\n")}</Body> : null}
+        <Group title="Routes and rides">
+          <Toggle
+            tint={tint}
+            label="Snap imports to road maps"
+            description="Matches an imported GPX onto surveyed OpenStreetMap roads: sharper corners, plus surface and speed-breaker data. Needs a connection at import."
+            value={settings.useOsmSnapping}
+            onChange={(useOsmSnapping) => update({ useOsmSnapping })}
+          />
+          <Divider />
+          <Toggle
+            tint={tint}
+            label="Record rides"
+            description="Saves each ride's track and every call made."
+            value={settings.logRides}
+            onChange={(logRides) => update({ logRides })}
+          />
+        </Group>
+
+        <Group title="Reliability on this phone">
+          <Field
+            title="Riding with the screen off"
+            hint={
+              settings.locationMode === "screen-on"
+                ? "Screen-on mode: no background service at all. The most dependable way to ride with the phone on a mount; calls stop if the phone locks."
+                : permissions === null
+                  ? "Uses Android's background location service when it is allowed."
+                  : permissions.background
+                    ? 'Location is set to "Allow all the time", so rides keep calling corners with the phone locked or in a pocket.'
+                    : 'Location is "While using the app": rides work with the screen on. Allow all the time to ride with it locked.'
+            }
+          >
+            <Segmented<Settings["locationMode"]>
+              tint={tint}
+              value={settings.locationMode}
+              onChange={(locationMode) => update({ locationMode })}
+              options={[
+                { value: "auto", label: "Pocket if allowed" },
+                { value: "screen-on", label: "Screen on only" },
+              ]}
+            />
+            {native && permissions !== null && !permissions.background && settings.locationMode === "auto" ? (
+              <Button
+                label='Allow location "all the time"'
+                onPress={() => {
+                  void requestBackground().then(() => checkPermissions().then(setPermissions));
+                }}
+              />
+            ) : null}
+          </Field>
+          <Divider />
+          <Toggle
+            tint={tint}
+            label="Keep the headset awake"
+            description="Holds a near-silent stream open during a ride, so Bluetooth headsets do not clip the first word of a call."
+            value={settings.keepHeadsetAwake}
+            onChange={(keepHeadsetAwake) => update({ keepHeadsetAwake })}
+          />
+          <Divider />
+          <Toggle
+            tint={tint}
+            label="Keep audio alive in the background"
+            description="Starts a second Android service so that stream survives the screen locking. Leave off unless you need it."
+            value={settings.backgroundAudio}
+            onChange={(backgroundAudio) => update({ backgroundAudio })}
+          />
+          {native ? (
+            <>
+              <Divider />
+              <ListItem
+                icon="battery"
+                label="Battery optimisation"
+                description="Xiaomi, Oppo, Vivo, Realme and OnePlus kill background apps hard. Exempt this app, and enable Autostart in the phone's security app."
+                onPress={() => void openBatteryOptimisationSettings()}
+              />
+              <Divider />
+              <ListItem
+                icon="bug"
+                label={testing ? (testProgress ?? "Running…") : "Run a self-test"}
+                description="Does everything a ride start does - audio, headset stream, location - for twelve seconds, with no route needed."
+                {...(testing ? {} : { onPress: selfTest })}
+              />
+            </>
+          ) : null}
+        </Group>
+
+        <Group title="Diagnostics">
+          {crash ? (
+            <View style={styles.crash}>
+              <Text style={styles.crashTitle}>{`${crash.name}: ${crash.message}`}</Text>
+              <Small>{`${new Date(crash.time).toLocaleString()} · during ${crash.phase}`}</Small>
+            </View>
+          ) : (
+            <Small>No errors recorded.</Small>
+          )}
+          <Button label="Share a diagnostics report" icon="share" onPress={shareDiagnostics} />
+          {crash ? (
             <Button
-              label="Clear"
+              label="Clear the recorded error"
               kind="ghost"
-              style={styles.spaced}
               onPress={() => {
                 clearLastCrash();
                 setCrash(null);
               }}
             />
-          </Card>
-        </>
-      ) : null}
-
-      <Card>
-        <Title>Reset</Title>
-        <Row>
+          ) : null}
           <Button
-            label="Back to defaults"
+            label="Reset all settings"
             kind="ghost"
-            onPress={() =>
-              Alert.alert("Reset settings?", "All of the above goes back to its default.", [
-                { text: "Cancel", style: "cancel" },
-                {
-                  text: "Reset",
-                  style: "destructive",
-                  onPress: () =>
-                    update({ ...DEFAULT_SETTINGS, disclaimerAccepted: settings.disclaimerAccepted }),
-                },
-              ])
-            }
+            onPress={() => {
+              void confirm({
+                title: "Reset settings?",
+                body: "Everything on this screen goes back to its default. Routes and rides are kept.",
+                confirmLabel: "Reset",
+                destructive: true,
+              }).then((yes) => {
+                if (yes) update({ ...DEFAULT_SETTINGS, disclaimerAccepted: settings.disclaimerAccepted });
+              });
+            }}
           />
-        </Row>
-      </Card>
+        </Group>
 
-      <Body dim>
-        Rally Co-Driver is assistive only. It describes the road from map data, which is sometimes
-        wrong, using GPS, which is sometimes late. Ride to what you can see.
-      </Body>
+        <Small style={styles.footnote}>
+          Rally Co-Driver is assistive only. It describes the road from map data, which is sometimes
+          wrong, using GPS, which is sometimes late. Ride to what you can see.
+        </Small>
+      </View>
     </Screen>
   );
 }
 
+function VoiceOption({
+  name,
+  detail,
+  selected,
+  onPress,
+}: {
+  name: string;
+  detail: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={({ pressed }) => [styles.voice, selected && styles.voiceSelected, pressed && styles.pressed]}
+    >
+      <View style={styles.flex}>
+        <Text style={styles.voiceName} numberOfLines={1}>
+          {name}
+        </Text>
+        <Text style={styles.voiceDetail}>{detail}</Text>
+      </View>
+      {selected ? <Icon name="check" size={18} color={colors.accent} /> : null}
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
-  spaced: { marginTop: spacing.sm },
+  flex: { flex: 1 },
+  content: { padding: 0, gap: 0, paddingBottom: spacing.xxl },
+  padded: { paddingHorizontal: spacing.lg, gap: spacing.xl },
+  group: { gap: spacing.sm },
+  field: { gap: spacing.sm },
+  pressed: { opacity: 0.6 },
+  voices: { gap: 4 },
+  voice: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceHigh,
+  },
+  voiceSelected: { borderWidth: 1, borderColor: colors.accent },
+  voiceName: { color: colors.text, fontSize: 14, fontWeight: "600" },
+  voiceDetail: { color: colors.textDim, fontSize: 12 },
+  crash: { gap: 4 },
+  crashTitle: { color: colors.bad, fontSize: 14, fontWeight: "600" },
+  footnote: { textAlign: "center", paddingHorizontal: spacing.md },
 });

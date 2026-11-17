@@ -8,11 +8,11 @@
 
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import * as Sharing from "expo-sharing";
-import { File, Paths } from "expo-file-system";
 
 import { Body, Button, Card, Title } from "../ui/components";
+import { shareFile } from "../ui/share";
 import { colors, radius, spacing } from "../ui/theme";
+import { writeTemp } from "../storage/files";
 import type { Breadcrumb, CrashRecord } from "../diagnostics";
 
 /** Plain-English names for the steps the breadcrumb trail records. */
@@ -37,6 +37,8 @@ const STEP_NAMES: Record<string, string> = {
   "ride:survived-2s": "running, 2 seconds in",
   "ride:survived-6s": "running, 6 seconds in",
   "task:batch": "handling a GPS update",
+  "task:first-batch": "handling the first GPS update from the service",
+  "location:foreground-chosen": "starting screen-on location",
   "location:foreground-fallback": "falling back to foreground location",
   "selftest:audio": "self-test: audio",
   "selftest:location-foreground": "self-test: foreground location",
@@ -49,6 +51,7 @@ export function RecoveryScreen({
   breadcrumb,
   survivedMs,
   routeName,
+  switchedToScreenOn = false,
   onDismiss,
 }: {
   crash: CrashRecord | null;
@@ -56,11 +59,11 @@ export function RecoveryScreen({
   /** Time between the last breadcrumb and the last proof of life. */
   survivedMs: number | null;
   routeName: string;
+  /** Set when the app has switched itself to screen-on location as a result. */
+  switchedToScreenOn?: boolean;
   onDismiss: () => void;
 }) {
   const share = async (): Promise<void> => {
-    const file = new File(Paths.cache, "rally-crash.txt");
-    file.create({ overwrite: true });
     const trail =
       (breadcrumb
         ? `last step: ${breadcrumb.step} (${STEP_NAMES[breadcrumb.step] ?? "unknown step"})\nat: ${new Date(breadcrumb.at).toISOString()}\n`
@@ -68,14 +71,10 @@ export function RecoveryScreen({
       (survivedMs === null
         ? "survived: unknown\n"
         : `survived: ${(survivedMs / 1000).toFixed(1)} s after that step\n`);
-    file.write(
-      crash
-        ? `${new Date(crash.time).toISOString()}\nroute: ${routeName}\n${trail}phase: ${crash.phase}\n${crash.name}: ${crash.message}\n\n${crash.stack ?? ""}`
-        : `The app closed during a ride on "${routeName}" without leaving a JavaScript error, which means a native crash.\n${trail}`,
-    );
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(file.uri, { mimeType: "text/plain" });
-    }
+    const text = crash
+      ? `${new Date(crash.time).toISOString()}\nroute: ${routeName}\n${trail}phase: ${crash.phase}\n${crash.name}: ${crash.message}\n\n${crash.stack ?? ""}`
+      : `The app closed during a ride on "${routeName}" without leaving a JavaScript error, which means a native crash.\n${trail}`;
+    await shareFile(writeTemp("rally-crash.txt", text), "text/plain");
   };
 
   return (
@@ -107,6 +106,16 @@ export function RecoveryScreen({
           ) : null}
         </Card>
 
+        {switchedToScreenOn ? (
+          <Card tint={colors.warn}>
+            <Body>
+              To keep you riding, the next ride will run in screen-on mode, without Android's
+              background location service. Keep the phone awake on its mount. You can switch back
+              in Settings → Reliability.
+            </Body>
+          </Card>
+        ) : null}
+
         {crash ? (
           <ScrollView style={styles.box}>
             <Text style={styles.mono}>
@@ -135,7 +144,7 @@ export function RecoveryScreen({
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
-  content: { flex: 1, padding: spacing.md, gap: spacing.md },
+  content: { flex: 1, padding: spacing.lg, gap: spacing.md },
   box: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.sm },
   step: { color: colors.accent, fontSize: 20, fontWeight: "700" },
   stepId: { color: colors.textDim, fontFamily: "monospace", fontSize: 12 },

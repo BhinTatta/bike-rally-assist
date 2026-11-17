@@ -21,6 +21,10 @@ Three **ride modes** change how it talks:
 > **Assistive only.** The engine works from map data, which is sometimes wrong,
 > and from GPS, which is sometimes late. Ride to what you can see.
 
+| Home | Route | Ride |
+| --- | --- | --- |
+| ![Home: ride modes and routes](docs/screenshots/home.png) | ![Route: map, stats and stage profile](docs/screenshots/route.png) | ![Ride: next corner, what follows, road ahead](docs/screenshots/ride.png) |
+
 ## Status
 
 | Phase | Scope | State |

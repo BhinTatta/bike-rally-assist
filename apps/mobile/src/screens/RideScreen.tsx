@@ -154,15 +154,21 @@ export function RideScreen({ navigation, route: navRoute }: Props) {
   // The hardware back button must not drop you out of a ride by accident.
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
-      void confirm({
-        title: snapshot.preview ? "End the preview?" : "Stop the ride?",
-        body: snapshot.preview
-          ? undefined
-          : "The ride will be saved and the corner calls will stop.",
-        confirmLabel: snapshot.preview ? "End preview" : "Stop ride",
-        cancelLabel: snapshot.preview ? "Keep watching" : "Keep riding",
-        destructive: true,
-      } as Parameters<typeof confirm>[0]).then((yes) => {
+      const question = snapshot.preview
+        ? {
+            title: "End the preview?",
+            confirmLabel: "End preview",
+            cancelLabel: "Keep watching",
+            destructive: true,
+          }
+        : {
+            title: "Stop the ride?",
+            body: "The ride will be saved and the corner calls will stop.",
+            confirmLabel: "Stop ride",
+            cancelLabel: "Keep riding",
+            destructive: true,
+          };
+      void confirm(question).then((yes) => {
         if (yes) void finish();
       });
       return true;

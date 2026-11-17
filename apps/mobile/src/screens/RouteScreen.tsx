@@ -90,6 +90,7 @@ export function RouteScreen({ navigation, route: navRoute }: Props) {
   const [missing, setMissing] = useState(false);
   const [starting, setStarting] = useState<"ride" | "preview" | null>(null);
   const [highlight, setHighlight] = useState<RouteSection | null>(null);
+  const [showAllSections, setShowAllSections] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
   // A screen stays mounted underneath the one pushed on top of it. There is no
@@ -187,7 +188,22 @@ export function RouteScreen({ navigation, route: navRoute }: Props) {
   const stats = summary?.stats;
   const name = summary?.name ?? route.name ?? "Route";
   const features = route.features ?? [];
-  const sections = (route.sections ?? []).filter((s) => s.endDist - s.startDist >= 300);
+  const allSections = (route.sections ?? []).filter((s) => s.endDist - s.startDist >= 300);
+  // A long route has dozens of stretches. Lead with the ones worth riding to:
+  // the longest busy ones, shown in road order.
+  const SECTION_LIMIT = 6;
+  const sections =
+    showAllSections || allSections.length <= SECTION_LIMIT
+      ? allSections
+      : [...allSections]
+          .sort(
+            (a, b) =>
+              Number(b.kind === "technical" || b.kind === "twisty") -
+                Number(a.kind === "technical" || a.kind === "twisty") ||
+              b.endDist - b.startDist - (a.endDist - a.startDist),
+          )
+          .slice(0, SECTION_LIMIT)
+          .sort((a, b) => a.startDist - b.startDist);
   const cornerTotal = Math.max(1, route.corners.length);
   const cautions = route.corners.filter((c) => c.caution).length;
   const previewNotes = route.corners.slice(0, 4);
@@ -330,9 +346,9 @@ export function RouteScreen({ navigation, route: navRoute }: Props) {
             ) : null}
           </Card>
 
-          {sections.length > 1 ? (
+          {allSections.length > 1 ? (
             <Card>
-              <Heading>How the road changes</Heading>
+              <Heading>{sections.length < allSections.length ? "The best stretches" : "How the road changes"}</Heading>
               <Small>Tap a stretch to find it on the map.</Small>
               <View>
                 {sections.map((section) => {
@@ -367,6 +383,13 @@ export function RouteScreen({ navigation, route: navRoute }: Props) {
                   );
                 })}
               </View>
+              {allSections.length > SECTION_LIMIT ? (
+                <Button
+                  label={showAllSections ? "Show fewer" : `Show all ${allSections.length} stretches`}
+                  kind="ghost"
+                  onPress={() => setShowAllSections((all) => !all)}
+                />
+              ) : null}
             </Card>
           ) : null}
 

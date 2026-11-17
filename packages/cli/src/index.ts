@@ -69,6 +69,7 @@ async function main(argv: string[]): Promise<number> {
       lead: { type: "string" },
       lag: { type: "string" },
       rally: { type: "boolean" },
+      mode: { type: "string" },
       "max-number": { type: "string" },
       osm: { type: "boolean" },
       offline: { type: "boolean" },

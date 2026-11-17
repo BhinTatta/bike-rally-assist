@@ -6,7 +6,17 @@ loaded and speaks the next corner into your Bluetooth headset —
 the phone on a twisty ghat road.
 
 It is **not** navigation. It never tells you where to go, only what the road is
-about to do.
+about to do: the corners, and also crests, steep descents, gravel, speed
+breakers, and whether the next few kilometres are open road or one hairpin
+after another.
+
+Three **ride modes** change how it talks:
+
+| Mode | For | Sounds like |
+| --- | --- | --- |
+| **Cruise** | relaxed touring | early calls, only corners that matter: *"Sharp right, 120 metres"* |
+| **Sport** | a spirited ride | every real corner: *"Sharp right, 80 metres, into medium left"* |
+| **Duke** | attack | rally pacenotes, late and terse: *"Right 3, 80, into left 2"* |
 
 > **Assistive only.** The engine works from map data, which is sometimes wrong,
 > and from GPS, which is sometimes late. Ride to what you can see.
@@ -19,6 +29,7 @@ about to do.
 | **2** | OSM road snapping at import time | **done** |
 | **3** | React Native / Expo app (Android first) | **done** |
 | **4** | Polish: permissions, disclaimer, U-turns, GPS loss, README | **done** |
+| **5** | Ride modes, hazards, road sections, ride display, preview, self-drawn map | **done** |
 
 ## Layout
 
@@ -102,7 +113,10 @@ Things worth checking:
 * each corner is called exactly once — the summary line counts them;
 * the S-bend is a single chained call (`"... into sharp left"`);
 * GPS noise does not break it: `--noise 6` still calls 11 of 11 corners;
-* rally pacenotes: `--rally` gives `"Left 3, 60, into right 1"`.
+* rally pacenotes: `--rally` gives `"Left 3, 60, into right 1"`;
+* the app's ride modes: `--mode cruise`, `--mode sport`, `--mode duke`. With a
+  mode, calls become braking-aware and the corner flagged as catching riders
+  out is called as `"Caution, right 3, 100"`.
 
 Replay a recorded ride instead of simulating one (this is the Phase 3 tuning
 loop — the app will export rides in exactly this format):
@@ -218,6 +232,18 @@ ways a match can be rejected in favour of the raw GPX.
    `long` (the *sustained* tight part exceeds 80 m), `into` (next corner starts
    within 30 m).
 
+9. **Annotate**: each corner gets its approach length and gradient, and a
+   `caution` flag when it is tight and either ends a fast stretch or sits on a
+   steep descent. The route is cut into **sections** (straight / flowing /
+   twisty / technical) by heading change per kilometre, and GPX elevation
+   yields **features**: crests, dips, steep climbs and descents.
+
+With OSM snapping, the map adds more features along the matched road: surface
+changes (`surface=gravel`, untagged tracks), bridges, tunnels, narrow
+stretches, speed breakers (`traffic_calming`), railway crossings and fords.
+Coverage is whatever local mappers have added - an unmapped speed breaker is
+not announced.
+
 Every threshold in that list lives in one object:
 [`packages/engine/src/config.ts`](packages/engine/src/config.ts). See
 [docs/tuning.md](docs/tuning.md) for what each value does to the calls.
@@ -236,6 +262,17 @@ Every threshold in that list lives in one object:
 * **Once each.** A corner already passed is dropped, never announced late.
 * **Direction aware.** Turn round and it notices after 60 m, then calls the
   route backwards with every corner mirrored.
+* **Braking-aware** (ride modes): the trigger is whichever is longer, the lead
+  time or the distance needed to slow to the corner's estimated speed
+  (`sqrt(lateralG * g * radius)`), so a hairpin after a straight is called
+  early enough to brake for.
+* **Warnings**: `"Caution, ..."` for flagged corners; `"Slow, ..."` /
+  `"Brake, ..."` only when, even braking harder than usual, there is no longer
+  room to slow down - never just because you are faster than the corner.
+* **Features and sections**: each hazard once, ahead of time
+  (`"Caution, speed breaker, 100 metres"`); a change in the road's character
+  once (`"Twisty section, 3 kilometres, 4 hairpins"`); in Duke, long straights
+  counted out (`"Straight 600"`). Commentary never delays a corner call.
 * **Chain**: corners marked `into` are spoken in one call, up to three.
 * **Text and tokens.** Every call carries `text` for TTS *and* `tokens`
   (`["sharp", "right", "80", "metres"]`) so pre-recorded clips can be stitched
@@ -290,8 +327,8 @@ repository variable to `true` if you want the EAS workflow enabled.
 
 ### Developing on your phone
 
-This is a **dev build**, not Expo Go — background location, the foreground
-service and MapLibre are all native modules Expo Go does not contain.
+This is a **dev build**, not Expo Go — background location and the foreground
+service are native modules Expo Go does not contain.
 
 ```bash
 pnpm install
@@ -311,6 +348,40 @@ cd apps/mobile && pnpm start    # Metro; the dev build connects to it
 
 Edits in `packages/engine` hot-reload too — Metro bundles the engine from
 TypeScript source (see the resolver note in `metro.config.js`).
+
+### Checking the UI without a phone
+
+```bash
+cd apps/mobile && pnpm web      # every screen, in a browser
+```
+
+The browser build has no background GPS, so it cannot ride - but **Preview**
+works: it runs a simulated rider through the real engine, voice and ride
+screen. Storage is `localStorage` there (see `src/storage/files.web.ts`).
+
+### What is in the app
+
+* **Home** - pick a ride mode, pick a route. Import by file picker or by
+  sharing a GPX to the app. A bundled demo stage needs no file.
+* **Route** - a pan-and-zoom map with every corner coloured by grade, a stage
+  profile (corner ticks, elevation, road character), the corner mix, hazards,
+  estimated time for the chosen mode, and the roadbook.
+* **Preview** - ride the route at your desk at up to 8x, hearing exactly the
+  calls you would get on the road.
+* **Ride** - the next corner drawn as tight as it is, distance counting down,
+  the three corners after it, the road ahead heading-up, speed, the next
+  hazard, mute, repeat-last-call, and a stop button that has to be held.
+* **Summary and history** - distance, moving time, average and top speed,
+  corners called, an estimated maximum lean, and the ride files to share.
+
+### The map is drawn by the app
+
+There is no map SDK. The route is rendered as vectors with `react-native-svg`:
+no tiles, so it works with no signal, and no native GL surface. The first
+versions used MapLibre, and every crash reported sat next to its surface being
+created or destroyed; it could not be reproduced without the phone in hand, so
+it was removed rather than patched. The cost is no street basemap behind the
+route.
 
 ### What it does while you ride
 
@@ -358,6 +429,8 @@ documented in [docs/tuning.md](docs/tuning.md).
 | Bad fixes | Anything worse than 50 m accuracy is discarded outright |
 | Two corners together | Chained into one call: "sharp right, 80 metres, into medium left" |
 | Reaching the end | "Route finished", once |
+| A ride start that kills the app | The next launch explains, and the next ride runs in screen-on mode without the background service (Settings → Reliability switches back) |
+| Declining "Allow all the time" | The ride runs in screen-on mode and says so |
 
 ## Licence
 

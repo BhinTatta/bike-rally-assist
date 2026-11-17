@@ -21,6 +21,7 @@ import {
   Platform,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type LayoutChangeEvent,
 } from "react-native";
@@ -88,6 +89,7 @@ export function RideScreen({ navigation, route: navRoute }: Props) {
   const [resuming, setResuming] = useState(!rideEngine.getSnapshot().active);
   const [aheadSize, setAheadSize] = useState<{ width: number; height: number } | null>(null);
   const stopping = useRef(false);
+  const { width: windowWidth } = useWindowDimensions();
 
   useEffect(() => rideEngine.subscribe(setSnapshot), []);
   useEffect(() => {
@@ -253,6 +255,17 @@ export function RideScreen({ navigation, route: navRoute }: Props) {
       next.distance + next.corner.length * 0.3;
   const distanceText = next ? countdown(next.distance) : "";
   const distanceSize = distanceText === "NOW" ? 60 : distanceText.length >= 3 ? 80 : 104;
+  // "VERY SHARP RIGHT" has to fit a small phone as surely as "SLIGHT LEFT"
+  // fits a big one: size the name to the room there is.
+  const nameText = next
+    ? pacenotes
+      ? cornerCode(next.corner)
+      : capitalise(`${next.corner.grade} ${next.corner.direction}`)
+    : "";
+  const nameRoom = windowWidth - spacing.md * 2 - spacing.lg * 2 - 62;
+  const nameSize = pacenotes
+    ? 46
+    : Math.max(20, Math.min(38, nameRoom / (Math.max(1, nameText.length) * 0.66)));
 
   const remaining = state?.remaining ?? null;
   const pace = Math.max(
@@ -346,17 +359,21 @@ export function RideScreen({ navigation, route: navRoute }: Props) {
               </View>
             </View>
             <View style={styles.nameRow}>
-              <Text style={[styles.cornerName, { color: tint }]} numberOfLines={1} adjustsFontSizeToFit>
-                {pacenotes
-                  ? `${cornerCode(next.corner)}`
-                  : capitalise(`${next.corner.grade} ${next.corner.direction}`)}
+              <Text
+                style={[styles.cornerName, { color: tint, fontSize: nameSize, lineHeight: nameSize + 6 }]}
+                numberOfLines={1}
+              >
+                {nameText}
               </Text>
               {pacenotes ? (
                 <Text style={styles.cornerSub} numberOfLines={1}>
                   {next.corner.grade} {next.corner.direction}
                 </Text>
               ) : (
-                <Text style={[styles.cornerCodeBadge, { color: tint, borderColor: alpha(tint, 0.6) }]}>
+                <Text
+                  numberOfLines={1}
+                  style={[styles.cornerCodeBadge, { color: tint, borderColor: alpha(tint, 0.6) }]}
+                >
                   {cornerCode(next.corner)}
                 </Text>
               )}
@@ -600,7 +617,7 @@ const styles = StyleSheet.create({
   },
   nameRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
   cornerName: { flexShrink: 1, fontSize: 38, fontWeight: "900", letterSpacing: 0.5 },
-  cornerSub: { color: colors.textDim, fontSize: 18, fontWeight: "700", textTransform: "uppercase" },
+  cornerSub: { flexShrink: 1, color: colors.textDim, fontSize: 18, fontWeight: "700", textTransform: "uppercase" },
   cornerCodeBadge: {
     fontSize: 18,
     fontWeight: "900",
@@ -609,6 +626,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 1,
     overflow: "hidden",
+    flexShrink: 0,
   },
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, minHeight: 26 },
   status: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: 2, textAlign: "center" },

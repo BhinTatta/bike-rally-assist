@@ -1,14 +1,16 @@
 /** Small shared helpers for the CLI commands. */
 
 import { readFileSync } from "node:fs";
-import { analyseGpx, analyseRoute, parseGpx } from "@rally/engine";
+import { analyseGpx, analyseRoute, parseGpx, RIDE_MODES } from "@rally/engine";
 import type { AnalysedRoute, DeepPartial, EngineConfig } from "@rally/engine";
 import {
+  applyMapFeatures,
   corridorBoxes,
   matchToRoads,
   parseOverpass,
   resolveOsmConfig,
   snapRouteToOsm,
+  type MatchResult,
   type SnapResult,
 } from "@rally/osm";
 import { FileStore, defaultCacheDir } from "./osmStore.js";
@@ -68,7 +70,7 @@ export async function loadRouteMaybeOsm(
     console.error(dim(`  Loaded ${network.ways.length} ways from ${osmFile}`));
     const match = matchToRoads(parsed.points, network);
     return {
-      route: analyseRoute(match.geometry, overrides, parsed.name),
+      route: withMapFeatures(analyseRoute(match.geometry, overrides, parsed.name), match),
       snap: { ...match, fromCache: true },
     };
   }
@@ -80,11 +82,17 @@ export async function loadRouteMaybeOsm(
     cacheOnly: values["offline"] === true,
     onProgress: (message) => console.error(dim(`  ${message}`)),
   });
-  const route = analyseRoute(snap.geometry, overrides, parsed.name);
+  const route = withMapFeatures(analyseRoute(snap.geometry, overrides, parsed.name), snap);
   return { route, snap };
 }
 
 /** One line summarising what the OSM layer did, for every command. */
+/** Put the hazards a match found onto the route, as the app does. */
+function withMapFeatures(route: AnalysedRoute, match: MatchResult): AnalysedRoute {
+  applyMapFeatures(route, match);
+  return route;
+}
+
 export function describeSnap(snap: SnapResult | undefined): string | undefined {
   if (!snap) return undefined;
   if (!snap.usedOsm) return yellow(`OSM snapping not used: ${snap.quality.reason}`);
@@ -143,6 +151,16 @@ export function configFromFlags(values: Record<string, unknown>): DeepPartial<En
   const num = (v: unknown): number | undefined =>
     v === undefined ? undefined : Number(v);
 
+  // A ride mode is the starting point; the other flags then override it.
+  const mode = values["mode"];
+  if (typeof mode === "string") {
+    const preset = (RIDE_MODES as Record<string, { runtime: object } | undefined>)[mode];
+    if (!preset) {
+      throw new Error(`unknown --mode "${mode}" (use ${Object.keys(RIDE_MODES).join(", ")})`);
+    }
+    Object.assign(runtime, preset.runtime);
+  }
+
   if (values["spacing"] !== undefined) geometry["resampleMeters"] = num(values["spacing"]);
   if (values["smooth"] !== undefined) geometry["smoothWindow"] = num(values["smooth"]);
   if (values["span"] !== undefined) geometry["curvatureSpanMeters"] = num(values["span"]);
@@ -166,6 +184,7 @@ export const COMMON_FLAG_HELP = `
   --spacing <m>      resample spacing (default 5)
   --smooth <n>       smoothing window in samples, odd (default 13)
   --span <m>         curvature measurement half-span (default 10)
+  --mode <name>      ride mode preset: cruise, sport or duke (as in the app)
   --lead <s>         warning lead time (default 5)
   --lag <s>          speech/system lag compensation (default 1)
   --rally            rally pacenote mode ("Right 3, 80")

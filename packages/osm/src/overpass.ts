@@ -150,7 +150,7 @@ const sleep = (ms: number): Promise<void> =>
  * endpoints when the name does not even resolve.
  */
 export function isNetworkDown(error: Error): boolean {
-  return /UnknownHost|ENOTFOUND|EAI_AGAIN|Unable to resolve host|Network request failed|ECONNREFUSED|ENETUNREACH|fetch failed/i.test(
+  return /UnknownHost|ENOTFOUND|EAI_AGAIN|Unable to resolve host|Network request failed|Failed to fetch|Load failed|NetworkError|ECONNREFUSED|ENETUNREACH|fetch failed/i.test(
     error.message,
   );
 }

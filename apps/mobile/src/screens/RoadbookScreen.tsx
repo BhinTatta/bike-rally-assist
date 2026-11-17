@@ -72,7 +72,7 @@ export function RoadbookScreen({ navigation, route: navRoute }: Props) {
           onChange={setFilter}
           options={[
             { value: "all", label: "Everything" },
-            { value: "tight", label: "Sharp & tighter" },
+            { value: "tight", label: "Tight only" },
             { value: "hazards", label: "Hazards" },
           ]}
         />

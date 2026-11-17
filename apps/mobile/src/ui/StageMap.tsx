@@ -82,13 +82,53 @@ export function StageMap({
     [maxScale],
   );
 
+  /** Keep the centre of the view inside the route's bounding box. */
+  const clampCentre = useCallback(
+    (next: Camera): Camera => {
+      const { minX, minY, maxX, maxY } = shapes.bounds;
+      return {
+        ...next,
+        cx: Math.max(minX, Math.min(maxX, next.cx)),
+        cy: Math.max(minY, Math.min(maxY, next.cy)),
+      };
+    },
+    [shapes],
+  );
+
+  /**
+   * Zoom with the buttons. Zooming in on the middle of a route's bounding box
+   * usually means zooming in on empty hillside, so when the road would leave
+   * the view the camera slides over to the nearest piece of it.
+   */
   const zoomBy = useCallback(
     (factor: number) => {
-      setCamera((current) =>
-        current ? { ...current, scale: clampScale(current.scale * factor) } : current,
-      );
+      setCamera((current) => {
+        if (!current) return current;
+        const scale = clampScale(current.scale * factor);
+        let { cx, cy } = current;
+        if (factor < 1) {
+          const points = route.points;
+          const stride = Math.max(1, Math.floor(points.length / 600));
+          let best = Infinity;
+          let nearest: { x: number; y: number } | null = null;
+          for (let i = 0; i < points.length; i += stride) {
+            const world = shapes.project(points[i]!.lat, points[i]!.lon);
+            const d = (world.x - cx) ** 2 + (world.y - cy) ** 2;
+            if (d < best) {
+              best = d;
+              nearest = world;
+            }
+          }
+          const reach = (Math.min(width, height) * scale) / 3;
+          if (nearest && Math.sqrt(best) > reach) {
+            cx = nearest.x;
+            cy = nearest.y;
+          }
+        }
+        return clampCentre({ cx, cy, scale });
+      });
     },
-    [clampScale],
+    [clampScale, clampCentre, route.points, shapes, width, height],
   );
 
   // ----------------------------------------------------------- gestures
@@ -121,11 +161,13 @@ export function StageMap({
           } else {
             start.distance = null;
           }
-          setCamera({
-            cx: start.camera.cx - state.dx * scale,
-            cy: start.camera.cy - state.dy * scale,
-            scale,
-          });
+          setCamera(
+            clampCentre({
+              cx: start.camera.cx - state.dx * scale,
+              cy: start.camera.cy - state.dy * scale,
+              scale,
+            }),
+          );
         },
         onPanResponderRelease: () => {
           gesture.current = null;
@@ -134,7 +176,7 @@ export function StageMap({
           gesture.current = null;
         },
       }),
-    [interactive, clampScale],
+    [interactive, clampScale, clampCentre],
   );
 
   const onLayout = useCallback((event: LayoutChangeEvent) => {
@@ -159,6 +201,40 @@ export function StageMap({
     }
     return parts.length >= 2 ? `M${parts.join("L")}` : null;
   }, [highlight, shapes, route.spacing]);
+
+  // Picking a stretch out flies the camera to it; clearing it shows everything.
+  useEffect(() => {
+    if (width <= 0) return;
+    if (!highlight) {
+      setCamera(fit());
+      return;
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const step = Math.max(route.spacing, (highlight.endDist - highlight.startDist) / 60);
+    for (let d = highlight.startDist; d <= highlight.endDist; d += step) {
+      const p = shapes.at(d);
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    }
+    if (!Number.isFinite(minX)) return;
+    setCamera({
+      cx: (minX + maxX) / 2,
+      cy: (minY + maxY) / 2,
+      scale: clampScale(
+        Math.max(
+          (maxX - minX) / Math.max(1, width - PADDING * 4),
+          (maxY - minY) / Math.max(1, height - PADDING * 4),
+          1.5,
+        ),
+      ),
+    });
+    // Only a change of stretch should move the camera, not every re-render.
+  }, [highlight?.startDist, highlight?.endDist, width]);
 
   if (!camera || width <= 0) {
     return <View style={[styles.container, { height }]} onLayout={onLayout} />;
@@ -258,7 +334,8 @@ export function StageMap({
       </Svg>
       {interactive ? (
         <View style={styles.controls}>
-          <IconButton icon="plus" label="Zoom in" filled onPress={() => zoomBy(0.55)} />
+          <IconButton icon="plus" label="Zoom in" filled onPress={() => zoomBy(0.5)} />
+          <IconButton icon="minus" label="Zoom out" filled onPress={() => zoomBy(2)} />
           <IconButton icon="locate" label="Fit the whole route" filled onPress={() => setCamera(fit())} />
         </View>
       ) : null}

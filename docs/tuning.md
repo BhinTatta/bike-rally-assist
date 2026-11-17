@@ -132,3 +132,44 @@ Riding backwards mirrors each corner: left becomes right, `tightens` becomes
 `opens`, and `into` is re-derived for the new order (corner *n* chains with
 corner *n−1*). The grade, radius and heading change are properties of the road
 and do not change.
+
+## Ride modes
+
+A ride mode (`packages/engine/src/modes.ts`) is a named set of `runtime`
+overrides. The app applies the mode first, then the rider's own settings on
+top. Try one from the CLI with `--mode cruise|sport|duke`.
+
+| Value | Cruise | Sport | Duke | Effect |
+| --- | --- | --- | --- | --- |
+| `leadSeconds` | 7 | 5.5 | 4.5 | how far ahead a call lands |
+| `maxRallyNumberToCall` | 4 | 5 | 6 | cruise skips gentle and slight corners |
+| `rallyMode` | no | no | yes | words or pacenotes |
+| `lateralG` | 0.25 | 0.35 | 0.45 | cornering force behind the estimated corner speed |
+| `brakingG` | 0.25 | 0.35 | 0.45 | deceleration assumed when working out how early to call |
+| `reactionSeconds` | 2 | 1.5 | 1 | time allowed before braking starts |
+| `overspeedMargin` | 0.5 | 0.5 | 0.6 | how much harder than `brakingG` before "slow"/"brake" |
+| `announceSections` | yes | yes | no | "Twisty section, 3 kilometres" |
+| `callStraights` | no | no | yes | "Straight 600" after a corner |
+
+`brakingAwareLead`, `speedWarnings`, `cautionCalls` and `announceFeatures` are
+on in all three and off in the bare engine defaults, which is why the engine's
+original behaviour (and tests) are unchanged without a mode.
+
+If calls for tight corners feel late at speed, raise `reactionSeconds` or lower
+`brakingG` for the mode. If "caution" fires too often, raise
+`features.cautionApproachMeters` (default 300) or lower
+`features.cautionMaxRallyNumber` (default 3).
+
+## Features and sections
+
+All under `features` in the config.
+
+| Value | Default | Effect |
+| --- | --- | --- |
+| `elevationSmoothMeters` | 120 | averaging applied to GPX elevation; lower finds more crests, and more noise |
+| `steepDescentPercent` / `steepClimbPercent` | 7 / 8 | gradient that counts as steep |
+| `steepMinMeters` | 150 | a steep stretch shorter than this is ignored |
+| `crestGradientPercent` | 4 | gradient needed on both sides of a crest or dip |
+| `sectionWindowMeters` | 400 | window used to judge the character of the road |
+| `sectionMinMeters` | 600 | shorter sections fold into a neighbour |
+| `flowingTurnPerKm` / `twistyTurnPerKm` / `technicalTurnPerKm` | 60 / 250 / 600 | degrees of turning per km for each class |

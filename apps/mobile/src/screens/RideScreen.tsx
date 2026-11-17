@@ -75,7 +75,9 @@ const capitalise = (text: string): string => text.toUpperCase();
 const sentence = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 export function RideScreen({ navigation, route: navRoute }: Props) {
-  const locationMode = navRoute.params?.mode ?? "background";
+  const locationMode =
+    navRoute.params?.mode ??
+    (rideEngine.getSnapshot().preview ? "preview" : rideEngine.locationMode);
   // The screen must never sleep mid-ride. Done by hand rather than with the
   // hook so that a phone refusing the wake lock is not an unhandled error.
   useEffect(() => {
@@ -101,9 +103,18 @@ export function RideScreen({ navigation, route: navRoute }: Props) {
   useEffect(() => {
     if (rideEngine.getSnapshot().active) return;
     let cancelled = false;
-    void rideEngine.resume().finally(() => {
-      if (!cancelled) setResuming(false);
-    });
+    void rideEngine
+      .resume()
+      .then((resumed) => {
+        // A location service with no ride behind it would otherwise run, and
+        // show its notification, until the phone was restarted.
+        if (!resumed) return stopRideLocation();
+        return undefined;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setResuming(false);
+      });
     return () => {
       cancelled = true;
     };

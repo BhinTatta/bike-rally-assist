@@ -13,7 +13,7 @@ import type { AnalysedRoute } from "@rally/engine";
 import { breadcrumb } from "../diagnostics";
 import { confirm, inform } from "../ui/dialog";
 import { loadSettings } from "../storage/settings";
-import { startRideLocation, type RideLocationMode } from "./locationTask";
+import { startRideLocation, stopRideLocation, type RideLocationMode } from "./locationTask";
 import {
   checkPermissions,
   openLocationSettings,
@@ -27,8 +27,29 @@ export type StartResult =
   | { started: true; mode: RideLocationMode | "preview" }
   | { started: false };
 
+/**
+ * Only one ride at a time. Starting another while one is live would leave its
+ * location service running with nothing listening, so ask, then shut the old
+ * one down properly.
+ */
+async function finishRunningRide(): Promise<boolean> {
+  if (!rideEngine.isActive) return true;
+  const stop = await confirm({
+    title: "A ride is already running",
+    body: "Stop it and save it before starting this one?",
+    confirmLabel: "Stop the current ride",
+    cancelLabel: "Leave it running",
+    destructive: true,
+  });
+  if (!stop) return false;
+  await stopRideLocation();
+  await rideEngine.end();
+  return true;
+}
+
 /** A simulated ride: no permissions, no GPS, same co-driver. */
 export async function startPreview(routeId: string, route: AnalysedRoute): Promise<StartResult> {
+  if (!(await finishRunningRide())) return { started: false };
   const begun = await rideEngine.begin(routeId, route, { preview: true });
   if (!begun.ok) {
     await inform("Could not start the preview", begun.error);
@@ -45,6 +66,7 @@ export async function startRide(routeId: string, route: AnalysedRoute): Promise<
     );
     return { started: false };
   }
+  if (!(await finishRunningRide())) return { started: false };
   breadcrumb("start:pressed");
   const settings = await loadSettings();
   const state = await checkPermissions();
@@ -94,6 +116,7 @@ export async function startRide(routeId: string, route: AnalysedRoute): Promise<
   try {
     breadcrumb("start:location-service");
     const mode = await startRideLocation(route.name ?? "your route", screenOnOnly);
+    rideEngine.locationMode = mode;
     breadcrumb("start:navigate");
     return { started: true, mode };
   } catch (error) {

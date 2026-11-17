@@ -148,6 +148,12 @@ class RideEngine {
   private previewTimer: ReturnType<typeof setInterval> | null = null;
   private preview: PreviewState | null = null;
 
+  /**
+   * How the current ride is getting its positions, set by whoever started the
+   * location stream. The ride screen needs it when reopened without being told.
+   */
+  locationMode: "background" | "foreground" = "background";
+
   /** True when this ride is running without ducking or the keep-alive stream. */
   get isAudioDisabled(): boolean {
     return this.audioDisabled;
